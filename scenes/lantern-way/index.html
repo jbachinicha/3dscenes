@@ -580,6 +580,9 @@ function dismissIntro() {
   introGone = true;
   intro.classList.add('hide');
 }
+// The intro overlay sits above the canvas and swallows the tap, so it needs
+// its own listener — without it there is no way past the card on a phone.
+intro.addEventListener('pointerdown', dismissIntro);
 renderer.domElement.addEventListener('pointerdown', dismissIntro);
 
 function resetGlide() {
