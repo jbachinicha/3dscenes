@@ -73,6 +73,30 @@
       #back, #caption, #intro { transition: none; }
     }
 
+    /* Spinner shown while photos are still downloading */
+    #loading {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      z-index: 5; display: flex; align-items: center; gap: 9px;
+      padding: 7px 15px 7px 11px; border-radius: 999px;
+      background: rgba(255, 252, 248, 0.82);
+      border: 1px solid rgba(200, 90, 135, 0.22);
+      box-shadow: 0 6px 20px rgba(200, 120, 160, 0.18);
+      backdrop-filter: blur(6px);
+      color: rgba(170, 70, 110, 0.9); font-size: 12px; letter-spacing: 0.06em;
+      pointer-events: none; opacity: 0; transition: opacity 0.3s ease;
+    }
+    #loading.show { opacity: 1; }
+    #loading .ring {
+      width: 15px; height: 15px; border-radius: 999px;
+      border: 2px solid rgba(200, 90, 135, 0.25);
+      border-top-color: rgba(200, 90, 135, 0.95);
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      #loading .ring { animation-duration: 2.4s; }
+    }
+
     /* On-screen driving controls — shown only on touch devices (see JS below) */
     #touchControls { display: none; }
     body.touch #hud { display: none; }
@@ -83,19 +107,41 @@
       /* Keep clear of home-indicator / notch areas */
       padding: 0 max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
     }
-    .tpad {
-      position: absolute; bottom: 18px; left: 18px;
-      display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px);
-      gap: 8px; pointer-events: auto;
+    /* Virtual joystick: a fixed base with a thumb knob that follows the drag */
+    #stick {
+      position: absolute; bottom: 26px; left: 26px;
+      width: 132px; height: 132px; border-radius: 999px;
+      pointer-events: auto; touch-action: none;
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      background: rgba(255, 255, 255, 0.35);
+      border: 1px solid rgba(200, 90, 135, 0.26);
+      backdrop-filter: blur(6px);
     }
-    .tpad button { grid-column: 2; }
-    .tpad button[data-k="left"]  { grid-column: 1; grid-row: 2; }
-    .tpad button[data-k="fwd"]   { grid-column: 2; grid-row: 1; }
-    .tpad button[data-k="right"] { grid-column: 3; grid-row: 2; }
-    .tpad button[data-k="back"]  { grid-column: 2; grid-row: 2; }
+    /* Faint cross-hair so the neutral centre reads at a glance */
+    #stick::before, #stick::after {
+      content: ''; position: absolute; background: rgba(200, 90, 135, 0.16);
+    }
+    #stick::before { left: 50%; top: 18%; width: 1px; height: 64%; transform: translateX(-50%); }
+    #stick::after { top: 50%; left: 18%; height: 1px; width: 64%; transform: translateY(-50%); }
+
+    #stickKnob {
+      position: absolute; left: 50%; top: 50%;
+      width: 58px; height: 58px; margin: -29px 0 0 -29px; border-radius: 999px;
+      background: rgba(255, 173, 212, 0.9);
+      border: 1px solid rgba(216, 96, 140, 0.45);
+      box-shadow: 0 4px 14px rgba(200, 120, 160, 0.35);
+      transition: background 0.12s ease;
+      will-change: transform;
+    }
+    #stick.active #stickKnob { background: rgba(216, 96, 140, 0.95); }
 
     #touchControls button {
-      -webkit-tap-highlight-color: transparent; touch-action: none; user-select: none;
+      -webkit-tap-highlight-color: transparent; touch-action: none;
+      /* iOS Safari needs the prefixed forms, or a long press still selects the
+         label text and pops the callout menu mid-drive. */
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none;
       width: 56px; height: 56px; border-radius: 16px; font-size: 20px;
       color: rgba(170, 70, 110, 0.95);
       background: rgba(255, 255, 255, 0.55); border: 1px solid rgba(200, 90, 135, 0.28);
@@ -127,16 +173,13 @@
 <body>
 <a id="back" href="../../">&larr; all scenes</a>
 
+<div id="loading"><div class="ring"></div><span id="loadingText">loading photos</span></div>
+
 <div id="caption"><div class="date"></div><div class="text"></div></div>
 <div id="hud">W A S D / arrows to drive &nbsp;•&nbsp; shift for turbo &nbsp;•&nbsp; space to brake &nbsp;•&nbsp; drag to look &nbsp;•&nbsp; R to reset</div>
 
 <div id="touchControls">
-  <div class="tpad">
-    <button data-k="fwd" aria-label="Drive forward">&#9650;</button>
-    <button data-k="left" aria-label="Steer left">&#9664;</button>
-    <button data-k="back" aria-label="Reverse">&#9660;</button>
-    <button data-k="right" aria-label="Steer right">&#9654;</button>
-  </div>
+  <div id="stick" role="application" aria-label="Drive joystick"><div id="stickKnob"></div></div>
   <button id="brakeBtn" aria-label="Brake">BRAKE</button>
   <button id="turboBtn" aria-label="Turbo">TURBO</button>
   <button id="resetBtn" aria-label="Reset car">&#8635;</button>
@@ -261,11 +304,36 @@ function placeholderTexture(n) {
 }
 
 const texLoader = new THREE.TextureLoader();
+
+// Photos here are multi-megabyte, so show a spinner until they are all in.
+// Counting settled loads rather than listening per-texture keeps it correct
+// when some files 404 — a failed load still has to clear the counter.
+const loadingEl = document.getElementById('loading');
+const loadingText = document.getElementById('loadingText');
+let pending = 0, totalPhotos = 0;
+function photoStarted() {
+  pending++; totalPhotos++;
+  updateLoading();
+}
+function photoSettled() {
+  pending--;
+  updateLoading();
+}
+function updateLoading() {
+  if (pending > 0) {
+    loadingEl.classList.add('show');
+    loadingText.textContent = `loading photos ${totalPhotos - pending}/${totalPhotos}`;
+  } else {
+    loadingEl.classList.remove('show');
+  }
+}
+
 // Resolve to the photo when it exists, otherwise a placeholder — so the scene
 // looks finished before any images are dropped in.
 function photoMaterial(path, index) {
   const mat = new THREE.MeshBasicMaterial({ map: placeholderTexture(index + 1) });
   if (path) {
+    photoStarted();
     texLoader.load(
       '../../' + path,
       (tex) => {
@@ -273,9 +341,10 @@ function photoMaterial(path, index) {
         tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
         mat.map = tex;
         mat.needsUpdate = true;
+        photoSettled();
       },
       undefined,
-      () => { /* keep the placeholder */ }
+      () => { photoSettled(); /* keep the placeholder */ }
     );
   }
   return mat;
@@ -885,22 +954,62 @@ if (isTouch) {
   document.querySelector('#intro .keys').style.display = 'none';
 }
 
-const TOUCH_KEY = { fwd: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD' };
-document.querySelectorAll('.tpad button[data-k]').forEach((btn) => {
-  const code = TOUCH_KEY[btn.dataset.k];
-  const press = (e) => {
+// Virtual joystick. Unlike the keyboard it reports how far it is pushed, so
+// `stickX` / `stickY` are -1..1 and the drive loop reads them as analog
+// throttle and steering rather than as on/off keys.
+let stickX = 0, stickY = 0;
+{
+  const stick = document.getElementById('stick');
+  const knob = document.getElementById('stickKnob');
+  const RADIUS = 46;        // how far the knob travels from centre, in px
+  const DEADZONE = 0.14;    // ignore tiny wobbles so it can rest at neutral
+  let stickId = null;       // pointerId of the finger owning the stick
+
+  const setKnob = (dx, dy) => { knob.style.transform = `translate(${dx}px, ${dy}px)`; };
+
+  function update(e) {
+    const r = stick.getBoundingClientRect();
+    let dx = e.clientX - (r.left + r.width / 2);
+    let dy = e.clientY - (r.top + r.height / 2);
+    // Clamp to the base circle so the knob cannot be flung outside it
+    const len = Math.hypot(dx, dy);
+    if (len > RADIUS) { dx = (dx / len) * RADIUS; dy = (dy / len) * RADIUS; }
+    setKnob(dx, dy);
+
+    const nx = dx / RADIUS, ny = dy / RADIUS;
+    stickX = Math.abs(nx) < DEADZONE ? 0 : nx;
+    stickY = Math.abs(ny) < DEADZONE ? 0 : ny;
+  }
+
+  function release() {
+    stickId = null;
+    stickX = stickY = 0;
+    setKnob(0, 0);
+    stick.classList.remove('active');
+  }
+
+  stick.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    keys[code] = true;
-    btn.classList.add('held');
+    stickId = e.pointerId;
+    stick.setPointerCapture(e.pointerId);   // keep tracking if the finger slides off
+    stick.classList.add('active');
     dismissIntro();
-    if ((zoomedMesh || zoomAnim) && DRIVE.has(code)) endZoom();
-  };
-  const release = (e) => { e.preventDefault(); keys[code] = false; btn.classList.remove('held'); };
-  btn.addEventListener('pointerdown', press);
-  btn.addEventListener('pointerup', release);
-  btn.addEventListener('pointercancel', release);
-  btn.addEventListener('pointerleave', release);
-});
+    if (zoomedMesh || zoomAnim) endZoom();
+    update(e);
+  });
+  stick.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== stickId) return;
+    e.preventDefault();
+    update(e);
+  });
+  ['pointerup', 'pointercancel'].forEach((ev) =>
+    stick.addEventListener(ev, (e) => {
+      if (e.pointerId !== stickId) return;
+      e.preventDefault();
+      release();
+    })
+  );
+}
 
 const brakeBtn = document.getElementById('brakeBtn');
 brakeBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); keys.Space = true; brakeBtn.classList.add('held'); dismissIntro(); });
@@ -1122,13 +1231,20 @@ function animate() {
   const speed = Math.abs(vehicle.currentVehicleSpeed());
   // Cut the throttle at the cap rather than letting it run away
   const capped = speed > maxSpeed;
-  const engine = capped ? 0 : fwd ? engineForce : rev ? -engineForce * 0.55 : 0;
+  // Throttle: keys are all-or-nothing, the joystick is proportional to how far
+  // it is pushed (pushing up on screen is -Y, which is forward).
+  const keyThrottle = fwd ? 1 : rev ? -0.55 : 0;
+  const stickThrottle = -stickY * (stickY > 0 ? 0.55 : 1);
+  const throttle = keyThrottle !== 0 ? keyThrottle : stickThrottle;
+  const engine = capped ? 0 : engineForce * throttle;
   // Tighten the lock at speed so it stays composed instead of spinning out
   const maxSteer = THREE.MathUtils.lerp(0.58, 0.2, THREE.MathUtils.clamp(speed / 14, 0, 1));
-  const wantSteer = lft ? maxSteer : rgt ? -maxSteer : 0;
+  const keySteer = lft ? 1 : rgt ? -1 : 0;
+  const wantSteer = maxSteer * (keySteer !== 0 ? keySteer : -stickX);
   steer += (wantSteer - steer) * 0.2;
 
-  const brake = keys.Space ? BRAKE : (engine === 0 ? IDLE_DRAG : 0);
+  // Analog throttle rarely lands on exactly zero, so coast on a threshold
+  const brake = keys.Space ? BRAKE : (Math.abs(engine) < 0.01 ? IDLE_DRAG : 0);
   for (let i = 0; i < 4; i++) {
     vehicle.setWheelEngineForce(i, engine);   // all four driven: forgiving to drive
     vehicle.setWheelBrake(i, brake);
