@@ -28,7 +28,9 @@
 
     /* Caption panel that fades in as you pull up to a frame */
     #caption {
-      position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%) translateY(10px);
+      /* Top of screen: the joystick occupies the bottom-left on touch, and the
+         back button / loading pill sit above at top: 20px. */
+      position: fixed; left: 50%; top: 74px; transform: translateX(-50%) translateY(-14px);
       z-index: 4; pointer-events: none; opacity: 0;
       transition: opacity 0.45s ease, transform 0.45s ease;
       background: rgba(255, 252, 248, 0.9);
@@ -1257,7 +1259,8 @@ function animate() {
 
   // Turbo animation — twin exhaust flames flicker and grow, the car gets a
   // warm glow behind it, and the camera FOV punches out for a sense of speed
-  const boosting = turbo && fwd;
+  // Gate on actual throttle, not the key — the joystick never sets `fwd`
+  const boosting = turbo && throttle > 0.05;
   turboVisual += ((boosting ? 1 : 0) - turboVisual) * 0.15;
   if (turboVisual > 0.001) {
     const flicker = 0.82 + Math.sin(t * 46) * 0.18 + Math.sin(t * 97) * 0.06;
