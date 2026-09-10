@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Timeline Drive</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #fce8f4; font-family: Georgia, serif; }
+    canvas { display: block; }
+
+    #back {
+      position: fixed; top: 20px; left: 22px; z-index: 5;
+      color: rgba(200, 90, 135, 0.95); font-size: 14px; letter-spacing: 0.04em;
+      text-decoration: none; padding: 7px 14px; border-radius: 999px;
+      background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(200, 90, 135, 0.22);
+      backdrop-filter: blur(6px); transition: background 0.18s ease, transform 0.18s ease;
+    }
+    #back:hover { background: rgba(255,255,255,0.9); transform: translateY(-1px); }
+    #back:focus-visible { outline: 2px solid rgba(200,90,135,0.7); outline-offset: 3px; }
+
+    #hud {
+      position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+      z-index: 4; text-align: center; pointer-events: none;
+      color: rgba(170, 70, 110, 0.9); font-size: 13px; letter-spacing: 0.06em;
+      text-shadow: 0 1px 6px rgba(255,220,235,0.9);
+    }
+
+    /* Caption panel that fades in as you pull up to a frame */
+    #caption {
+      position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%) translateY(10px);
+      z-index: 4; pointer-events: none; opacity: 0;
+      transition: opacity 0.45s ease, transform 0.45s ease;
+      background: rgba(255, 252, 248, 0.9);
+      border: 1px solid rgba(200, 90, 135, 0.2);
+      border-radius: 18px; padding: 15px 26px 17px;
+      box-shadow: 0 10px 30px rgba(200, 120, 160, 0.22);
+      backdrop-filter: blur(8px);
+      max-width: min(90vw, 460px); text-align: center;
+    }
+    #caption.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #caption .date {
+      font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: rgba(200, 90, 135, 0.75); margin-bottom: 6px;
+    }
+    #caption .text { font-size: 17px; line-height: 1.5; color: #7d4b60; }
+
+    /* Intro card, dismissed on first input */
+    #intro {
+      position: fixed; inset: 0; z-index: 6; display: grid; place-items: center;
+      background: rgba(252, 232, 244, 0.72); backdrop-filter: blur(10px);
+      transition: opacity 0.6s ease; text-align: center; padding: 24px;
+    }
+    #intro.hide { opacity: 0; pointer-events: none; }
+    #intro .card {
+      background: rgba(255, 252, 248, 0.95); border-radius: 26px;
+      border: 1px solid rgba(200, 90, 135, 0.18);
+      box-shadow: 0 20px 60px rgba(200, 120, 160, 0.28);
+      padding: 44px 46px 40px; max-width: 470px;
+    }
+    #intro h1 { font-size: 30px; font-weight: normal; color: #8a4f66; letter-spacing: 0.01em; }
+    #intro p { margin-top: 14px; font-size: 15px; line-height: 1.65; color: #a1758a; }
+    #intro .keys { margin-top: 22px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    #intro kbd {
+      font-family: inherit; font-size: 12px; color: #9c5f78;
+      background: rgba(200, 90, 135, 0.08); border: 1px solid rgba(200, 90, 135, 0.2);
+      border-radius: 7px; padding: 5px 10px;
+    }
+    #intro .go { margin-top: 26px; font-size: 13px; letter-spacing: 0.14em;
+      text-transform: uppercase; color: rgba(200, 90, 135, 0.8); }
+
+    @media (prefers-reduced-motion: reduce) {
+      #back, #caption, #intro { transition: none; }
+    }
+
+    /* On-screen driving controls — shown only on touch devices (see JS below) */
+    #touchControls { display: none; }
+    body.touch #hud { display: none; }
+    body.touch #touchControls { display: block; }
+
+    #touchControls {
+      position: fixed; inset: 0; z-index: 4; pointer-events: none;
+      /* Keep clear of home-indicator / notch areas */
+      padding: 0 max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+    }
+    .tpad {
+      position: absolute; bottom: 18px; left: 18px;
+      display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(2, 56px);
+      gap: 8px; pointer-events: auto;
+    }
+    .tpad button { grid-column: 2; }
+    .tpad button[data-k="left"]  { grid-column: 1; grid-row: 2; }
+    .tpad button[data-k="fwd"]   { grid-column: 2; grid-row: 1; }
+    .tpad button[data-k="right"] { grid-column: 3; grid-row: 2; }
+    .tpad button[data-k="back"]  { grid-column: 2; grid-row: 2; }
+
+    #touchControls button {
+      -webkit-tap-highlight-color: transparent; touch-action: none; user-select: none;
+      width: 56px; height: 56px; border-radius: 16px; font-size: 20px;
+      color: rgba(170, 70, 110, 0.95);
+      background: rgba(255, 255, 255, 0.55); border: 1px solid rgba(200, 90, 135, 0.28);
+      backdrop-filter: blur(6px); display: grid; place-items: center;
+      transition: background 0.12s ease, transform 0.12s ease;
+    }
+    #touchControls button:active,
+    #touchControls button.held { background: rgba(255, 173, 212, 0.85); transform: scale(0.94); }
+
+    #brakeBtn {
+      position: absolute; bottom: 26px; right: 18px; pointer-events: auto;
+      width: 76px; height: 76px; border-radius: 999px; font-size: 12px;
+      letter-spacing: 0.06em; text-transform: uppercase;
+    }
+    #turboBtn {
+      position: absolute; bottom: 112px; right: 26px; pointer-events: auto;
+      width: 60px; height: 60px; border-radius: 999px; font-size: 11px;
+      letter-spacing: 0.05em; text-transform: uppercase;
+      color: rgba(255, 250, 255, 0.95);
+      background: rgba(255, 133, 179, 0.75); border: 1px solid rgba(216, 96, 140, 0.5);
+    }
+    #turboBtn.held { background: rgba(216, 96, 140, 0.95); }
+    #resetBtn {
+      position: absolute; top: 20px; right: 18px; pointer-events: auto;
+      width: 46px; height: 46px; border-radius: 999px; font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+<a id="back" href="../../">&larr; all scenes</a>
+
+<div id="caption"><div class="date"></div><div class="text"></div></div>
+<div id="hud">W A S D / arrows to drive &nbsp;•&nbsp; shift for turbo &nbsp;•&nbsp; space to brake &nbsp;•&nbsp; drag to look &nbsp;•&nbsp; R to reset</div>
+
+<div id="touchControls">
+  <div class="tpad">
+    <button data-k="fwd" aria-label="Drive forward">&#9650;</button>
+    <button data-k="left" aria-label="Steer left">&#9664;</button>
+    <button data-k="back" aria-label="Reverse">&#9660;</button>
+    <button data-k="right" aria-label="Steer right">&#9654;</button>
+  </div>
+  <button id="brakeBtn" aria-label="Brake">BRAKE</button>
+  <button id="turboBtn" aria-label="Turbo">TURBO</button>
+  <button id="resetBtn" aria-label="Reset car">&#8635;</button>
+</div>
+
+<div id="intro">
+  <div class="card">
+    <h1 id="introTitle"></h1>
+    <p id="introSub"></p>
+    <div class="keys">
+      <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><kbd>shift</kbd><kbd>space</kbd><kbd>R</kbd>
+    </div>
+    <div class="go">press any key to begin</div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import RAPIER from '@dimforge/rapier3d-compat';
+import { TITLE, SUBTITLE, ENDING, MOMENTS } from './moments.js';
+
+// Your dates, captions and photo paths live in moments.js — edit that file.
+document.getElementById('introTitle').textContent = TITLE;
+document.getElementById('introSub').textContent = SUBTITLE;
+
+// ── Palette (shared with the island scene) ─────────────────────────────────
+const C = {
+  sky:    0xfce8f4,
+  grass:  0x9fd3b0,
+  grass2: 0x8ec7a2,
+  road:   0xfff2ea,
+  kerb:   0xffd3e6,
+  cream:  0xfff7ee,
+  blush:  0xffadd4,
+  pink:   0xff85b3,
+  rose:   0xd8608c,
+  mint:   0x7ecfa4,
+  lilac:  0xd9b8f0,
+  bark:   0x9a6840,
+  wheel:  0x5c4a52,
+};
+
+// ── Renderer / scene / camera ────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(C.sky);
+scene.fog = new THREE.Fog(C.sky, 70, 300);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(0, 6, 12);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 4;
+controls.maxDistance = 26;
+controls.maxPolarAngle = Math.PI / 2.15;
+controls.enablePan = false;
+
+scene.add(new THREE.AmbientLight(0xffeef8, 1.0));
+const sun = new THREE.DirectionalLight(0xfff6e6, 1.32);
+sun.position.set(14, 24, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+// Tight shadow frustum that follows the car, so shadows stay crisp on a long road
+Object.assign(sun.shadow.camera, { near: 1, far: 90, left: -22, right: 22, top: 22, bottom: -22 });
+sun.shadow.bias = -0.0012;
+scene.add(sun, sun.target);
+const fill = new THREE.DirectionalLight(0xd8d0ff, 0.28);
+fill.position.set(-12, 10, -8);
+scene.add(fill);
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+// ── Canvas-texture helpers ──────────────────────────────────────────────────
+function textTexture(text, { w = 512, h = 148, font = '600 56px Georgia, serif',
+                             bg = '#fff7ee', fg = '#c2607f' } = {}) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = bg; g.fillRect(0, 0, w, h);
+  g.fillStyle = fg; g.font = font;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, w / 2, h / 2 + 2);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+// Stand-in for a photo that has not been added yet
+function placeholderTexture(n) {
+  const w = 600, h = 400;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, w, h);
+  const pairs = [['#ffd9ea', '#d8ecff'], ['#ffe4d2', '#ffd9ea'], ['#dff2e3', '#ffe9f4'], ['#e8dcff', '#d9f0ea']];
+  const [a, b] = pairs[(n - 1) % pairs.length];
+  grad.addColorStop(0, a); grad.addColorStop(1, b);
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(150,80,115,0.8)';
+  g.font = '600 130px Georgia, serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(String(n).padStart(2, '0'), w / 2, h / 2 - 18);
+  g.font = '300 24px Georgia, serif';
+  g.fillStyle = 'rgba(150,80,115,0.75)';
+  g.fillText('add your photo', w / 2, h / 2 + 62);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const texLoader = new THREE.TextureLoader();
+// Resolve to the photo when it exists, otherwise a placeholder — so the scene
+// looks finished before any images are dropped in.
+function photoMaterial(path, index) {
+  const mat = new THREE.MeshBasicMaterial({ map: placeholderTexture(index + 1) });
+  if (path) {
+    texLoader.load(
+      '../../' + path,
+      (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        mat.map = tex;
+        mat.needsUpdate = true;
+      },
+      undefined,
+      () => { /* keep the placeholder */ }
+    );
+  }
+  return mat;
+}
+
+// ── Physics ─────────────────────────────────────────────────────────────────
+await RAPIER.init();
+const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+world.timestep = 1 / 60;
+
+// Ground: one big flat slab, so the road is dead level and driving stays stable
+world.createCollider(
+  RAPIER.ColliderDesc.cuboid(400, 0.5, 400).setTranslation(0, -0.5, 0).setFriction(1.4),
+  world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+);
+
+// ── Ground visuals ──────────────────────────────────────────────────────────
+function grassTexture() {
+  const N = 64, c = document.createElement('canvas');
+  c.width = c.height = N;
+  const g = c.getContext('2d');
+  g.fillStyle = '#9fd3b0'; g.fillRect(0, 0, N, N);
+  for (let i = 0; i < 900; i++) {
+    g.fillStyle = `rgba(${130 + Math.random() * 45},${185 + Math.random() * 35},${150 + Math.random() * 35},0.55)`;
+    g.fillRect(Math.random() * N, Math.random() * N, 1.5, 1.5);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(230, 230);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(800, 800),
+  new THREE.MeshLambertMaterial({ map: grassTexture() })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ── The road: a gently winding ribbon the frames line up along ─────────────
+const SPAN = 34;                       // spacing between moments
+const LEAD = 26;                       // runway before the first frame
+const TAIL = 30;                       // run-out after the last
+const roadPts = [];
+{
+  const total = LEAD + SPAN * (MOMENTS.length - 1) + TAIL;
+  for (let z = -LEAD, i = 0; z <= total - LEAD; z += 10, i++) {
+    // A lazy S so the drive is never a straight corridor
+    roadPts.push(new THREE.Vector3(Math.sin(z * 0.021) * 11 + Math.sin(z * 0.007) * 5, 0, z));
+  }
+}
+const roadCurve = new THREE.CatmullRomCurve3(roadPts, false, 'catmullrom', 0.4);
+const ROAD_LEN = roadCurve.getLength();
+
+// Sample the curve once; everything else positions itself off these frames
+function roadFrame(t) {
+  const p = roadCurve.getPointAt(THREE.MathUtils.clamp(t, 0, 1));
+  const tan = roadCurve.getTangentAt(THREE.MathUtils.clamp(t, 0, 1));
+  const right = new THREE.Vector3(tan.z, 0, -tan.x).normalize();
+  return { p, tan, right };
+}
+
+function ribbon(halfWidth, y, color, { steps = 420 } = {}) {
+  const pos = [], idx = [];
+  for (let i = 0; i <= steps; i++) {
+    const { p, right } = roadFrame(i / steps);
+    const l = p.clone().addScaledVector(right, -halfWidth);
+    const r = p.clone().addScaledVector(right, halfWidth);
+    pos.push(l.x, y, l.z, r.x, y, r.z);
+    if (i < steps) {
+      const a = i * 2;
+      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color }));
+  mesh.receiveShadow = true;
+  return mesh;
+}
+scene.add(ribbon(5.1, 0.012, C.kerb));   // soft shoulder
+scene.add(ribbon(4.3, 0.02, C.road));    // carriageway
+
+// Dashed centre line
+for (let i = 0; i < 82; i++) {
+  const t = i / 82;
+  const { p, tan } = roadFrame(t);
+  const dash = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.2, 2.3),
+    new THREE.MeshBasicMaterial({ color: 0xffc2da })
+  );
+  dash.rotation.x = -Math.PI / 2;
+  dash.rotation.z = -Math.atan2(tan.x, tan.z);
+  dash.position.set(p.x, 0.026, p.z);
+  scene.add(dash);
+}
+
+// ── Decor ───────────────────────────────────────────────────────────────────
+function makeTree(x, z, sc) {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09 * sc, 0.13 * sc, 0.8 * sc, 7),
+    new THREE.MeshLambertMaterial({ color: C.bark })
+  );
+  trunk.position.y = 0.4 * sc; trunk.castShadow = true;
+  g.add(trunk);
+  const leafMat = new THREE.MeshLambertMaterial({
+    color: pick([0x7ecfa4, 0x94dab4, 0xb0e8c4, 0xa8dcc0]),
+  });
+  for (let i = 0; i < 3; i++) {
+    const b = new THREE.Mesh(new THREE.SphereGeometry((0.34 + i * 0.06) * sc, 9, 7), leafMat);
+    b.position.set(rnd(-0.16, 0.16) * sc, (0.85 + i * 0.3) * sc, rnd(-0.16, 0.16) * sc);
+    b.castShadow = true;
+    g.add(b);
+  }
+  g.position.set(x, 0, z);
+  return g;
+}
+
+function makeFlower(x, z) {
+  const g = new THREE.Group();
+  const sc = rnd(0.8, 1.3);
+  const stem = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02 * sc, 0.028 * sc, 0.42 * sc, 6),
+    new THREE.MeshLambertMaterial({ color: 0x5aad72 })
+  );
+  stem.position.y = 0.21 * sc;
+  g.add(stem);
+  const petalMat = new THREE.MeshLambertMaterial({
+    color: pick([0xffadd4, 0xffbfe4, 0xff9ec8, 0xffdce8, 0xe8b0ff, 0xffccaa]),
+  });
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const petal = new THREE.Mesh(new THREE.SphereGeometry(0.075 * sc, 7, 5), petalMat);
+    petal.position.set(Math.cos(a) * 0.1 * sc, 0.44 * sc, Math.sin(a) * 0.1 * sc);
+    petal.scale.set(1, 0.45, 1);
+    g.add(petal);
+  }
+  const mid = new THREE.Mesh(
+    new THREE.SphereGeometry(0.045 * sc, 7, 5),
+    new THREE.MeshLambertMaterial({ color: 0xffd76a })
+  );
+  mid.position.y = 0.46 * sc;
+  g.add(mid);
+  g.position.set(x, 0, z);
+  return g;
+}
+
+// Scatter décor to the sides of the road, never on it
+const treeBodies = [];
+for (let i = 0; i < 190; i++) {
+  const t = Math.random();
+  const { p, right } = roadFrame(t);
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const off = rnd(9, 46) * side;
+  const x = p.x + right.x * off + rnd(-3, 3);
+  const z = p.z + right.z * off + rnd(-3, 3);
+  if (Math.random() < 0.45) {
+    const sc = rnd(0.8, 1.5);
+    scene.add(makeTree(x, z, sc));
+    // Solid, so the world does not feel like a painted backdrop
+    const rb = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(x, 0.8 * sc, z));
+    world.createCollider(RAPIER.ColliderDesc.cylinder(0.8 * sc, 0.16 * sc), rb);
+    treeBodies.push(rb);
+  } else {
+    scene.add(makeFlower(x, z));
+  }
+}
+
+// Rolling hills far off, purely visual
+for (let i = 0; i < 26; i++) {
+  const t = Math.random();
+  const { p, right } = roadFrame(t);
+  const off = rnd(55, 130) * (Math.random() < 0.5 ? -1 : 1);
+  const r = rnd(9, 22);
+  const hill = new THREE.Mesh(
+    new THREE.SphereGeometry(r, 12, 8),
+    new THREE.MeshLambertMaterial({ color: pick([C.grass, C.grass2, 0xc9e8d2]) })
+  );
+  hill.position.set(p.x + right.x * off, rnd(-r * 0.72, -r * 0.55), p.z + right.z * off);
+  scene.add(hill);
+}
+
+// Drifting petals
+const petals = [];
+{
+  const geo = new THREE.SphereGeometry(0.08, 5, 4);
+  for (let i = 0; i < 90; i++) {
+    const m = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      color: pick([0xffadd4, 0xff9ec8, 0xffdce8, 0xe8b0ff]),
+    }));
+    m.scale.set(1, 0.4, 1.5);
+    scene.add(m);
+    petals.push({
+      mesh: m,
+      x: rnd(-60, 60), y: rnd(2, 26), z: rnd(-40, ROAD_LEN + 40),
+      vy: rnd(0.6, 1.5), spin: rnd(0.5, 2), sway: rnd(0, 6.3),
+    });
+  }
+}
+
+// ── Photo frames ────────────────────────────────────────────────────────────
+const frames = [];
+const photoMeshes = [];   // every clickable photo/print mesh, for raycasting
+MOMENTS.forEach((m, i) => {
+  // Distance along the road for this moment, converted to a curve parameter
+  const dist = LEAD + i * SPAN;
+  const t = THREE.MathUtils.clamp(dist / ROAD_LEN, 0, 1);
+  const { p, right, tan } = roadFrame(t);
+  const side = i % 2 === 0 ? 1 : -1;          // alternate banks
+  const base = p.clone().addScaledVector(right, 7.2 * side);
+
+  const g = new THREE.Group();
+  g.position.copy(base);
+  // Face back the way the car arrives from, so the mount faces the camera
+  // as you approach instead of facing sideways at the road.
+  g.rotation.y = Math.atan2(-tan.x, -tan.z);
+
+  // Posts
+  for (const dx of [-1.5, 1.5]) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.13, 2.0, 8),
+      new THREE.MeshLambertMaterial({ color: C.cream })
+    );
+    post.position.set(dx, 1.0, 0);
+    post.castShadow = true;
+    g.add(post);
+  }
+
+  // Mount + photo(s) — a gallery post (m.photos) fans several prints across
+  // one wide mount instead of a single centred photo.
+  const zoomTargets = [];
+  const isGallery = Array.isArray(m.photos) && m.photos.length > 0;
+  const mountWidth = isGallery ? Math.max(4.0, 1.7 + m.photos.length * 1.15) : 4.0;
+
+  const mount = new THREE.Mesh(
+    new THREE.BoxGeometry(mountWidth, 2.9, 0.22),
+    new THREE.MeshLambertMaterial({ color: C.cream })
+  );
+  mount.position.set(0, 3.05, 0);
+  mount.castShadow = true;
+  g.add(mount);
+
+  if (isGallery) {
+    const n = m.photos.length;
+    const spread = Math.min(1.05 * (n - 1), mountWidth - 1.5);
+    const cluster = [];   // every print in this gallery post, for "bring to front"
+    m.photos.forEach((path, pi) => {
+      const fx = n === 1 ? 0 : THREE.MathUtils.lerp(-spread / 2, spread / 2, pi / (n - 1));
+      const fanAngle = n === 1 ? 0 : THREE.MathUtils.lerp(0.22, -0.22, pi / (n - 1));
+      const print = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.7, 1.35),
+        photoMaterial(path, i * 10 + pi)
+      );
+      // Each print sits a bit further forward than the last, so overlapping
+      // fanned prints don't share a depth value and z-fight/flicker.
+      print.position.set(fx, 3.02 + (n > 1 ? (pi % 2 === 0 ? 0.1 : -0.06) : 0.1), 0.13 + pi * 0.05);
+      print.rotation.z = fanAngle;
+      // A slim frame behind each print, so it reads as a photo, not a decal
+      const border = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.86, 1.51),
+        new THREE.MeshLambertMaterial({ color: 0xffffff, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
+      );
+      border.position.copy(print.position);
+      border.position.z -= 0.03;
+      border.rotation.z = fanAngle;
+      g.add(border, print);
+      zoomTargets.push(print);
+      // While zoomed into this gallery, clicking a covered print brings it to
+      // the front instead of exiting the zoom — see bringToFront().
+      print.userData.border = border;
+      print.userData.cluster = cluster;
+      cluster.push(print);
+    });
+  } else {
+    const photo = new THREE.Mesh(new THREE.PlaneGeometry(3.45, 2.3), photoMaterial(m.photo, i));
+    photo.position.set(0, 3.12, 0.13);
+    g.add(photo);
+    zoomTargets.push(photo);
+  }
+
+  // Ribbon trim along the top of the mount
+  const trim = new THREE.Mesh(
+    new THREE.BoxGeometry(4.25, 0.2, 0.34),
+    new THREE.MeshLambertMaterial({ color: side > 0 ? C.blush : C.lilac })
+  );
+  trim.position.set(0, 4.6, 0.02);
+  g.add(trim);
+
+  // Date plaque
+  const plaque = new THREE.Mesh(
+    new THREE.BoxGeometry(2.0, 0.56, 0.12),
+    new THREE.MeshLambertMaterial({ map: textTexture(m.date, { font: '600 52px Georgia, serif' }) })
+  );
+  plaque.position.set(0, 1.62, 0.16);
+  g.add(plaque);
+
+  // A little heart finial
+  const heart = new THREE.Mesh(
+    new THREE.SphereGeometry(0.17, 8, 6),
+    new THREE.MeshLambertMaterial({ color: C.pink })
+  );
+  heart.position.set(0, 4.86, 0);
+  heart.scale.set(1, 0.85, 0.7);
+  g.add(heart);
+
+  scene.add(g);
+  frames.push({ group: g, world: base.clone().setY(3), ...m });
+  for (const mesh of zoomTargets) {
+    mesh.userData.zoomTarget = true;
+    photoMeshes.push(mesh);
+  }
+});
+
+// ── Arch at the start ───────────────────────────────────────────────────────
+{
+  const { p, right } = roadFrame(0.004);
+  const g = new THREE.Group();
+  g.position.set(p.x, 0, p.z);
+  const toNext = roadFrame(0.02).p.clone().sub(p).setY(0).normalize();
+  g.rotation.y = Math.atan2(toNext.x, toNext.z);
+  const ARCH_HALF = 5.7, POST_H = 4.6;
+  for (const dx of [-ARCH_HALF, ARCH_HALF]) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.26, 0.32, POST_H, 10),
+      new THREE.MeshLambertMaterial({ color: C.cream })
+    );
+    post.position.set(dx, POST_H / 2, 0);
+    post.castShadow = true;
+    g.add(post);
+    // Solid, like the trees, so the arch is part of the world
+    const wp = new THREE.Vector3(dx, 0, 0).applyEuler(g.rotation).add(g.position);
+    const rb = world.createRigidBody(
+      RAPIER.RigidBodyDesc.fixed().setTranslation(wp.x, POST_H / 2, wp.z));
+    world.createCollider(RAPIER.ColliderDesc.cylinder(POST_H / 2, 0.32), rb);
+  }
+  // Flattened arc: a full half-torus of this radius would tower over the road
+  const top = new THREE.Mesh(
+    new THREE.TorusGeometry(ARCH_HALF, 0.26, 8, 30, Math.PI),
+    new THREE.MeshLambertMaterial({ color: C.cream })
+  );
+  top.position.y = POST_H;
+  top.scale.y = 0.38;
+  top.castShadow = true;
+  g.add(top);
+  const banner = new THREE.Mesh(
+    new THREE.BoxGeometry(7.8, 1.35, 0.18),
+    new THREE.MeshLambertMaterial({
+      map: textTexture(TITLE, { w: 1024, h: 190, font: '600 92px Georgia, serif' }),
+    })
+  );
+  banner.position.set(0, 4.15, 0.02);
+  g.add(banner);
+  scene.add(g);
+}
+
+// ── Heart monument at the end ───────────────────────────────────────────────
+{
+  const dist = LEAD + SPAN * (MOMENTS.length - 1) + TAIL * 0.9;
+  const t = THREE.MathUtils.clamp(dist / ROAD_LEN, 0, 1);
+  const { p, tan } = roadFrame(t);
+  const g = new THREE.Group();
+  g.position.set(p.x, 0, p.z);
+  g.rotation.y = Math.atan2(-tan.x, -tan.z);
+
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0.55);
+  shape.bezierCurveTo(0, 1.0, -0.65, 1.32, -0.98, 0.66);
+  shape.bezierCurveTo(-1.42, -0.1, -0.44, -0.78, 0, -1.2);
+  shape.bezierCurveTo(0.44, -0.78, 1.42, -0.1, 0.98, 0.66);
+  shape.bezierCurveTo(0.65, 1.32, 0, 1.0, 0, 0.55);
+  const heartGeo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.5, bevelEnabled: true, bevelSize: 0.09, bevelThickness: 0.09, bevelSegments: 3,
+  });
+  heartGeo.center();
+  const heart = new THREE.Mesh(heartGeo, new THREE.MeshLambertMaterial({ color: C.pink }));
+  heart.scale.setScalar(2.1);
+  heart.position.y = 4.4;
+  heart.castShadow = true;
+  g.add(heart);
+
+  const pedestal = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.5, 1.9, 2.2, 12),
+    new THREE.MeshLambertMaterial({ color: C.cream })
+  );
+  pedestal.position.y = 1.1;
+  pedestal.castShadow = true;
+  g.add(pedestal);
+
+  const plate = new THREE.Mesh(
+    new THREE.BoxGeometry(3.4, 0.85, 0.16),
+    new THREE.MeshLambertMaterial({
+      map: textTexture(ENDING, { w: 768, h: 190, font: 'italic 600 64px Georgia, serif' }),
+    })
+  );
+  plate.position.set(0, 1.45, 1.92);
+  plate.rotation.x = -0.14;
+  g.add(plate);
+  scene.add(g);
+
+  const rb = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(p.x, 1.1, p.z));
+  world.createCollider(RAPIER.ColliderDesc.cylinder(1.1, 1.9), rb);
+}
+
+// ── The car ─────────────────────────────────────────────────────────────────
+const CHASSIS = { hx: 0.92, hy: 0.32, hz: 1.7 };
+const WHEEL = { radius: 0.42, width: 0.3, rest: 0.42 };
+const START = new THREE.Vector3(roadFrame(0.02).p.x, 1.6, roadFrame(0.02).p.z);
+
+const carBody = new THREE.Group();
+scene.add(carBody);
+const turboFlames = [];
+let turboLight;
+{
+  const shell = new THREE.MeshLambertMaterial({ color: 0xff9ebd });
+  const cream = new THREE.MeshLambertMaterial({ color: C.cream });
+  const glass = new THREE.MeshLambertMaterial({ color: 0x9fd8f2 });
+
+  // Lower body
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(1.84, 0.56, 3.4), shell);
+  hull.position.y = 0.02; hull.castShadow = true;
+  carBody.add(hull);
+
+  // Window band, deliberately a touch wider than the roof so it reads as glazing
+  const band = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.36, 1.72), glass);
+  band.position.set(0, 0.48, -0.16);
+  carBody.add(band);
+
+  // Roof
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.24, 1.56), shell);
+  roof.position.set(0, 0.78, -0.16);
+  roof.castShadow = true;
+  carBody.add(roof);
+
+  // Cream racing stripe over bonnet and roof
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.58, 3.44), cream);
+  stripe.position.y = 0.02;
+  carBody.add(stripe);
+  const roofStripe = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.26, 1.58), cream);
+  roofStripe.position.set(0, 0.78, -0.16);
+  carBody.add(roofStripe);
+
+  // Bumpers
+  for (const sz of [1.74, -1.74]) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.78, 0.2, 0.16), cream);
+    bar.position.set(0, -0.12, sz);
+    carBody.add(bar);
+  }
+
+  // Lamps
+  for (const sx of [-1, 1]) {
+    const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8),
+      new THREE.MeshLambertMaterial({ color: 0xfff6d0 }));
+    lamp.position.set(sx * 0.58, 0.1, 1.68);
+    lamp.scale.z = 0.55;
+    carBody.add(lamp);
+    const tail = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6),
+      new THREE.MeshLambertMaterial({ color: 0xff7090 }));
+    tail.position.set(sx * 0.6, 0.12, -1.7);
+    tail.scale.z = 0.55;
+    carBody.add(tail);
+  }
+
+  // Little heart on the roof, so it is unmistakably this scene's car
+  const badge = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6),
+    new THREE.MeshLambertMaterial({ color: C.rose }));
+  badge.position.set(0, 0.94, -0.16);
+  badge.scale.set(1, 0.7, 0.85);
+  carBody.add(badge);
+
+  // Twin exhaust flames — placeholder groups; the low-poly flame mesh
+  // (tools/turbo-flame/flame.py) loads async below and is cloned into each.
+  // Both meshes stay opacity 0 (and are simply absent until the load lands)
+  // so nothing shows until turbo is actually held.
+  for (const sx of [-0.42, 0.42]) {
+    const g = new THREE.Group();
+    g.position.set(sx, 0.02, -1.78);
+    carBody.add(g);
+    turboFlames.push({ group: g, outer: null, inner: null });
+  }
+
+  // Warm glow behind the car while boosting
+  turboLight = new THREE.PointLight(0xff8fb0, 0, 7, 2);
+  turboLight.position.set(0, 0.3, -2.2);
+  carBody.add(turboLight);
+}
+
+// Load the flame model once, clone it into each exhaust slot. The mesh was
+// modelled in Blender pointing along -Z already (see flame.py), matching
+// this car's rear-facing exhaust, so no extra rotation is needed here.
+{
+  const flameLoader = new GLTFLoader();
+  flameLoader.setMeshoptDecoder(MeshoptDecoder);
+  flameLoader.load('../../objects/turbo-flame/flame.glb', (gltf) => {
+    for (const f of turboFlames) {
+      const model = gltf.scene.clone(true);
+      model.traverse((child) => {
+        if (!child.isMesh) return;
+        child.material = child.material.clone();
+        child.material.transparent = true;
+        child.material.depthWrite = false;
+        child.material.blending = THREE.AdditiveBlending;
+        child.material.opacity = 0;
+        if (child.material.name === 'flameInner') f.inner = child;
+        else f.outer = child;
+      });
+      f.group.add(model);
+    }
+  });
+}
+
+// Chassis rigid body
+const chassisBody = world.createRigidBody(
+  RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(START.x, START.y, START.z)
+    .setCanSleep(false)
+);
+world.createCollider(
+  RAPIER.ColliderDesc.cuboid(CHASSIS.hx, CHASSIS.hy, CHASSIS.hz)
+    .setMass(16)
+    .setFriction(0.7)
+    .setTranslation(0, -0.16, 0),   // drop the CoM so it does not wheelie
+  chassisBody
+);
+
+const vehicle = world.createVehicleController(chassisBody);
+vehicle.indexUpAxis = 1;
+
+const wheelMeshes = [];
+{
+  const geo = new THREE.CylinderGeometry(WHEEL.radius, WHEEL.radius, WHEEL.width, 14);
+  geo.rotateZ(Math.PI / 2);              // axle along local X, so spin is about X
+  const tyre = new THREE.MeshLambertMaterial({ color: C.wheel });
+  const hubGeo = new THREE.CylinderGeometry(WHEEL.radius * 0.38, WHEEL.radius * 0.38, WHEEL.width + 0.02, 10);
+  hubGeo.rotateZ(Math.PI / 2);
+  const hubMat = new THREE.MeshLambertMaterial({ color: C.cream });
+
+  // Front pair first (steered), then rear
+  const conns = [
+    { x: -CHASSIS.hx, z:  1.18 },
+    { x:  CHASSIS.hx, z:  1.18 },
+    { x: -CHASSIS.hx, z: -1.18 },
+    { x:  CHASSIS.hx, z: -1.18 },
+  ];
+  conns.forEach((c) => {
+    vehicle.addWheel(
+      { x: c.x, y: -0.05, z: c.z },      // connection point, chassis space
+      { x: 0, y: -1, z: 0 },             // suspension direction
+      { x: -1, y: 0, z: 0 },             // axle
+      WHEEL.rest,
+      WHEEL.radius
+    );
+    const i = wheelMeshes.length;
+    vehicle.setWheelSuspensionStiffness(i, 26.0);
+    vehicle.setWheelSuspensionCompression(i, 0.82);
+    vehicle.setWheelSuspensionRelaxation(i, 0.88);
+    vehicle.setWheelMaxSuspensionTravel(i, 0.34);
+    vehicle.setWheelMaxSuspensionForce(i, 12000);
+    vehicle.setWheelFrictionSlip(i, 4.5);
+    vehicle.setWheelSideFrictionStiffness(i, 1.0);
+
+    const w = new THREE.Group();
+    w.rotation.order = 'YXZ';            // steer on Y, then spin on X
+    const t = new THREE.Mesh(geo, tyre); t.castShadow = true;
+    const h = new THREE.Mesh(hubGeo, hubMat);
+    w.add(t, h);
+    carBody.add(w);
+    wheelMeshes.push(w);
+  });
+}
+
+// ── Input ───────────────────────────────────────────────────────────────────
+const keys = Object.create(null);
+const HELD = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
+const DRIVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (HELD.has(e.code)) e.preventDefault();
+  dismissIntro();
+  if ((e.code === 'Escape' || DRIVE.has(e.code)) && (zoomedMesh || zoomAnim)) endZoom();
+});
+addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+const intro = document.getElementById('intro');
+let introGone = false;
+function dismissIntro() {
+  if (introGone) return;
+  introGone = true;
+  intro.classList.add('hide');
+}
+renderer.domElement.addEventListener('pointerdown', dismissIntro);
+
+// ── Touch controls ──────────────────────────────────────────────────────────
+// Phones have no keyboard, so on a touch device swap the WASD hint for an
+// on-screen D-pad that drives the exact same `keys` state as the keyboard.
+const isTouch = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+if (isTouch) {
+  document.body.classList.add('touch');
+  document.getElementById('introSub').textContent += ' Use the on-screen controls to drive.';
+  document.querySelector('#intro .go').textContent = 'tap to begin';
+  document.querySelector('#intro .keys').style.display = 'none';
+}
+
+const TOUCH_KEY = { fwd: 'KeyW', back: 'KeyS', left: 'KeyA', right: 'KeyD' };
+document.querySelectorAll('.tpad button[data-k]').forEach((btn) => {
+  const code = TOUCH_KEY[btn.dataset.k];
+  const press = (e) => {
+    e.preventDefault();
+    keys[code] = true;
+    btn.classList.add('held');
+    dismissIntro();
+    if ((zoomedMesh || zoomAnim) && DRIVE.has(code)) endZoom();
+  };
+  const release = (e) => { e.preventDefault(); keys[code] = false; btn.classList.remove('held'); };
+  btn.addEventListener('pointerdown', press);
+  btn.addEventListener('pointerup', release);
+  btn.addEventListener('pointercancel', release);
+  btn.addEventListener('pointerleave', release);
+});
+
+const brakeBtn = document.getElementById('brakeBtn');
+brakeBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); keys.Space = true; brakeBtn.classList.add('held'); dismissIntro(); });
+['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) =>
+  brakeBtn.addEventListener(ev, (e) => { e.preventDefault(); keys.Space = false; brakeBtn.classList.remove('held'); })
+);
+
+const turboBtn = document.getElementById('turboBtn');
+turboBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); keys.Turbo = true; turboBtn.classList.add('held'); dismissIntro(); });
+['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) =>
+  turboBtn.addEventListener(ev, (e) => { e.preventDefault(); keys.Turbo = false; turboBtn.classList.remove('held'); })
+);
+
+document.getElementById('resetBtn').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  dismissIntro();
+  resetCar();
+});
+
+function resetCar() {
+  chassisBody.setTranslation({ x: START.x, y: START.y, z: START.z }, true);
+  chassisBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+  chassisBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+  chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+
+  // Snap the chase camera back too — otherwise next frame's follow-delta
+  // jumps from wherever the car used to be to START in a single frame, and
+  // any in-progress photo zoom is left pointing at a post the car just left.
+  zoomedMesh = null;
+  zoomAnim = null;
+  controls.enabled = true;
+  carPos.copy(START);
+  camTarget.copy(START);
+  camera.position.set(START.x, START.y + 5, START.z - 11);
+  controls.target.copy(camTarget);
+  flipSince = null;
+}
+
+// ── Click-to-zoom on photos ─────────────────────────────────────────────────
+// Click any photo (single frame or a print in a gallery cluster) to fly the
+// camera in close; click again / click elsewhere / Esc to pull back out.
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+const ZOOM_DIST = 3.2;
+const ZOOM_DUR = 550; // ms
+const easeInOutCubic = (x) => x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2;
+
+let zoomedMesh = null;   // the mesh currently zoomed into, or null
+let zoomAnim = null;     // in-flight transition: { from, to, start, exiting }
+let savedOffset = null;  // camera offset from the car, restored on zoom-out
+
+function meshWorldPose(mesh) {
+  const pos = new THREE.Vector3();
+  mesh.getWorldPosition(pos);
+  const normal = new THREE.Vector3(0, 0, 1)
+    .applyQuaternion(mesh.getWorldQuaternion(new THREE.Quaternion()))
+    .normalize();
+  return { pos, normal };
+}
+
+function startZoom(mesh) {
+  const wasZoomed = !!zoomedMesh;
+  const { pos, normal } = meshWorldPose(mesh);
+  // Only capture the resume-to-driving offset on the *first* zoom-in — a
+  // re-focus onto another print in the same cluster must not overwrite it
+  // with an offset measured from the current (already zoomed-in) camera.
+  if (!wasZoomed) savedOffset = camera.position.clone().sub(camTarget);
+  zoomAnim = {
+    from: { pos: camera.position.clone(), target: controls.target.clone() },
+    to: { pos: pos.clone().addScaledVector(normal, ZOOM_DIST), target: pos.clone() },
+    start: performance.now(),
+    exiting: false,
+  };
+  zoomedMesh = mesh;
+  controls.enabled = false;
+}
+
+function endZoom() {
+  if (!zoomedMesh && !zoomAnim) return;
+  zoomAnim = {
+    from: { pos: camera.position.clone(), target: controls.target.clone() },
+    to: null, // resolved live from the car's current position each frame
+    start: performance.now(),
+    exiting: true,
+  };
+  zoomedMesh = null;
+}
+
+// Raise a covered print above the rest of its gallery cluster, so clicking
+// through a fanned stack surfaces whichever photo you actually want to see.
+function bringToFront(print) {
+  const cluster = print.userData.cluster;
+  if (!cluster) return;
+  const maxZ = Math.max(...cluster.map((m) => m.position.z));
+  if (print.position.z < maxZ) {
+    print.position.z = maxZ + 0.05;
+    if (print.userData.border) print.userData.border.position.z = print.position.z - 0.03;
+  }
+}
+
+function handlePointerClick(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.set(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(pointerNDC, camera);
+  if (zoomedMesh || (zoomAnim && !zoomAnim.exiting)) {
+    // Already zoomed into a gallery print: clicking another print in the same
+    // cluster brings it to the front and re-focuses instead of backing out.
+    const cluster = zoomedMesh?.userData.cluster;
+    if (cluster) {
+      const hit = raycaster.intersectObjects(cluster, false)[0];
+      if (hit && hit.object !== zoomedMesh) { bringToFront(hit.object); startZoom(hit.object); return; }
+    }
+    endZoom();
+    return;
+  }
+  const hit = raycaster.intersectObjects(photoMeshes, false)[0];
+  if (hit) { dismissIntro(); startZoom(hit.object); }
+}
+
+let pointerDownAt = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  pointerDownAt = { x: e.clientX, y: e.clientY };
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!pointerDownAt) return;
+  const dx = e.clientX - pointerDownAt.x, dy = e.clientY - pointerDownAt.y;
+  pointerDownAt = null;
+  if (dx * dx + dy * dy < 36) handlePointerClick(e.clientX, e.clientY); // ignore drags (orbiting)
+});
+
+const ENGINE = 17;
+const BRAKE = 14;
+const IDLE_DRAG = 1.2;
+const MAX_SPEED = 13;      // ~47 km/h: brisk, but you can still read the frames
+const TURBO_ENGINE = 42;
+const TURBO_MAX_SPEED = 32;
+let steer = 0;
+
+// ── HUD ─────────────────────────────────────────────────────────────────────
+const capEl = document.getElementById('caption');
+const capDate = capEl.querySelector('.date');
+const capText = capEl.querySelector('.text');
+let shownFrame = null;
+
+// Nearest frame within pull-up range, or null — shared by the caption panel
+// and the auto-look camera below, so both agree on which post you're at.
+function nearestFrame(carPos) {
+  let best = null, bestD = Infinity;
+  for (const f of frames) {
+    const d = carPos.distanceTo(f.world);
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return bestD < 13 ? best : null;
+}
+
+function applyCaption(near) {
+  if (near !== shownFrame) {
+    shownFrame = near;
+    if (near) {
+      capDate.textContent = near.date;
+      capText.textContent = near.caption;
+      capEl.classList.add('show');
+    } else {
+      capEl.classList.remove('show');
+    }
+  }
+}
+
+// ── Camera follow ───────────────────────────────────────────────────────────
+// Move the camera by however far the target moved, so it trails the car without
+// fighting the user's own orbiting. When a frame is nearby and the user hasn't
+// just been dragging, the orbit target eases toward it instead of the car, so
+// you don't have to manually drag to look at each post.
+let userDragging = false;
+let dragEndedAt = -Infinity;
+controls.addEventListener('start', () => { userDragging = true; });
+controls.addEventListener('end', () => { userDragging = false; dragEndedAt = performance.now(); });
+
+const camTarget = new THREE.Vector3().copy(START);
+controls.target.copy(camTarget);
+camera.position.set(START.x, START.y + 5, START.z - 11);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ── Loop ────────────────────────────────────────────────────────────────────
+const carPos = new THREE.Vector3();
+const carUp = new THREE.Vector3();
+const clock = new THREE.Clock();
+const BASE_FOV = camera.fov;
+let turboVisual = 0; // eases toward 1 while boosting, back to 0 when released
+
+// Auto-reset if the car ends up on its roof — a brief tilt during a hard
+// landing shouldn't trigger it, so it only fires after staying flipped.
+const FLIP_UP_THRESHOLD = -0.25;
+const FLIP_RESET_DELAY = 1200; // ms
+let flipSince = null;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // Controls
+  const fwd = keys.KeyW || keys.ArrowUp;
+  const rev = keys.KeyS || keys.ArrowDown;
+  const lft = keys.KeyA || keys.ArrowLeft;
+  const rgt = keys.KeyD || keys.ArrowRight;
+  const turbo = keys.ShiftLeft || keys.ShiftRight || keys.Turbo;
+  if (keys.KeyR) { resetCar(); keys.KeyR = false; }
+
+  const engineForce = turbo ? TURBO_ENGINE : ENGINE;
+  const maxSpeed = turbo ? TURBO_MAX_SPEED : MAX_SPEED;
+  const speed = Math.abs(vehicle.currentVehicleSpeed());
+  // Cut the throttle at the cap rather than letting it run away
+  const capped = speed > maxSpeed;
+  const engine = capped ? 0 : fwd ? engineForce : rev ? -engineForce * 0.55 : 0;
+  // Tighten the lock at speed so it stays composed instead of spinning out
+  const maxSteer = THREE.MathUtils.lerp(0.58, 0.2, THREE.MathUtils.clamp(speed / 14, 0, 1));
+  const wantSteer = lft ? maxSteer : rgt ? -maxSteer : 0;
+  steer += (wantSteer - steer) * 0.2;
+
+  const brake = keys.Space ? BRAKE : (engine === 0 ? IDLE_DRAG : 0);
+  for (let i = 0; i < 4; i++) {
+    vehicle.setWheelEngineForce(i, engine);   // all four driven: forgiving to drive
+    vehicle.setWheelBrake(i, brake);
+  }
+  vehicle.setWheelSteering(0, steer);
+  vehicle.setWheelSteering(1, steer);
+
+  vehicle.updateVehicle(world.timestep);
+  world.step();
+
+  // Turbo animation — twin exhaust flames flicker and grow, the car gets a
+  // warm glow behind it, and the camera FOV punches out for a sense of speed
+  const boosting = turbo && fwd;
+  turboVisual += ((boosting ? 1 : 0) - turboVisual) * 0.15;
+  if (turboVisual > 0.001) {
+    const flicker = 0.82 + Math.sin(t * 46) * 0.18 + Math.sin(t * 97) * 0.06;
+    for (const f of turboFlames) {
+      if (!f.outer) continue; // flame model still loading
+      f.outer.material.opacity = turboVisual * 0.8;
+      f.inner.material.opacity = turboVisual * 0.95;
+      const s = flicker * (0.35 + turboVisual * 0.65);
+      f.group.scale.set(1, 1, Math.max(0.05, s));
+    }
+    turboLight.intensity = turboVisual * 2.2 * flicker;
+  } else {
+    for (const f of turboFlames) {
+      if (!f.outer) continue;
+      f.outer.material.opacity = 0;
+      f.inner.material.opacity = 0;
+    }
+    turboLight.intensity = 0;
+  }
+  const targetFov = BASE_FOV + turboVisual * 9;
+  if (Math.abs(camera.fov - targetFov) > 0.02) {
+    camera.fov += (targetFov - camera.fov) * 0.15;
+    camera.updateProjectionMatrix();
+  }
+
+  // Sync meshes
+  const tr = chassisBody.translation();
+  const rt = chassisBody.rotation();
+  carBody.position.set(tr.x, tr.y, tr.z);
+  carBody.quaternion.set(rt.x, rt.y, rt.z, rt.w);
+  carPos.set(tr.x, tr.y, tr.z);
+
+  // Flip detection — reset once the car has stayed upside-down for a beat
+  carUp.set(0, 1, 0).applyQuaternion(carBody.quaternion);
+  if (carUp.y < FLIP_UP_THRESHOLD) {
+    if (flipSince === null) flipSince = performance.now();
+    else if (performance.now() - flipSince > FLIP_RESET_DELAY) { resetCar(); flipSince = null; }
+  } else {
+    flipSince = null;
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const conn = vehicle.wheelChassisConnectionPointCs(i);
+    const susp = vehicle.wheelSuspensionLength(i);
+    const st = vehicle.wheelSteering(i) ?? 0;
+    const spin = vehicle.wheelRotation(i) ?? 0;
+    if (!conn) continue;
+    wheelMeshes[i].position.set(conn.x, conn.y - (susp ?? WHEEL.rest), conn.z);
+    wheelMeshes[i].rotation.set(spin, st, 0);
+  }
+
+  // Keep shadows crisp near the car rather than spread over the whole road
+  sun.position.set(carPos.x + 14, 24, carPos.z + 10);
+  sun.target.position.copy(carPos);
+  sun.target.updateMatrixWorld();
+
+  const near = nearestFrame(carPos);
+
+  // Camera trails the car (user orbit preserved) — unless a photo zoom is
+  // active or animating, in which case that takes over the camera instead.
+  if (zoomAnim) {
+    const k = easeInOutCubic(THREE.MathUtils.clamp((performance.now() - zoomAnim.start) / ZOOM_DUR, 0, 1));
+    const to = zoomAnim.exiting
+      ? { pos: carPos.clone().add(savedOffset), target: carPos }
+      : zoomAnim.to;
+    camera.position.lerpVectors(zoomAnim.from.pos, to.pos, k);
+    controls.target.lerpVectors(zoomAnim.from.target, to.target, k);
+    if (k >= 1) {
+      if (zoomAnim.exiting) { controls.enabled = true; camTarget.copy(carPos); }
+      zoomAnim = null;
+    }
+  } else if (!zoomedMesh) {
+    const delta = carPos.clone().sub(camTarget);
+    camera.position.add(delta);
+    camTarget.copy(carPos);
+    // Ease the orbit target toward a nearby post instead of the car, so you
+    // don't have to manually drag to look at it — unless the user is (or just
+    // was) dragging themselves, which always wins.
+    const autoLookOK = !userDragging && performance.now() - dragEndedAt > 1200;
+    const desiredTarget = near && autoLookOK ? near.world : camTarget;
+    controls.target.lerp(desiredTarget, 0.05);
+  }
+  controls.update();
+
+  applyCaption(near);
+
+  // Petals
+  for (const p of petals) {
+    p.y -= p.vy * 0.016;
+    if (p.y < -1) {
+      p.y = rnd(18, 28);
+      p.x = carPos.x + rnd(-55, 55);
+      p.z = carPos.z + rnd(-55, 55);
+    }
+    p.mesh.position.set(p.x + Math.sin(t * 0.7 + p.sway) * 1.4, p.y, p.z);
+    p.mesh.rotation.set(t * p.spin, t * p.spin * 0.6, t * p.spin * 0.3);
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

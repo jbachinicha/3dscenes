@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lantern Way</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #160f2e; font-family: Georgia, serif; }
+    canvas { display: block; }
+
+    #back {
+      position: fixed; top: 20px; left: 22px; z-index: 5;
+      color: rgba(255, 226, 190, 0.95); font-size: 14px; letter-spacing: 0.04em;
+      text-decoration: none; padding: 7px 14px; border-radius: 999px;
+      background: rgba(40, 24, 58, 0.55); border: 1px solid rgba(255, 179, 122, 0.28);
+      backdrop-filter: blur(6px); transition: background 0.18s ease, transform 0.18s ease;
+    }
+    #back:hover { background: rgba(52, 32, 74, 0.8); transform: translateY(-1px); }
+    #back:focus-visible { outline: 2px solid rgba(255, 179, 122, 0.8); outline-offset: 3px; }
+
+    #hud {
+      position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+      z-index: 4; text-align: center; pointer-events: none;
+      color: rgba(255, 226, 190, 0.85); font-size: 13px; letter-spacing: 0.06em;
+      text-shadow: 0 1px 8px rgba(20, 10, 35, 0.9);
+    }
+
+    /* Caption panel that fades in as you glide up to a lantern */
+    #caption {
+      position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%) translateY(10px);
+      z-index: 4; pointer-events: none; opacity: 0;
+      transition: opacity 0.45s ease, transform 0.45s ease;
+      background: rgba(40, 24, 58, 0.72);
+      border: 1px solid rgba(255, 179, 122, 0.28);
+      border-radius: 18px; padding: 15px 26px 17px;
+      box-shadow: 0 10px 34px rgba(20, 10, 35, 0.5);
+      backdrop-filter: blur(8px);
+      max-width: min(90vw, 460px); text-align: center;
+    }
+    #caption.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #caption .text { font-size: 17px; line-height: 1.5; color: #ffe9d3; }
+
+    /* Intro card, dismissed on first input */
+    #intro {
+      position: fixed; inset: 0; z-index: 6; display: grid; place-items: center;
+      background: rgba(22, 15, 46, 0.78); backdrop-filter: blur(10px);
+      transition: opacity 0.6s ease; text-align: center; padding: 24px;
+    }
+    #intro.hide { opacity: 0; pointer-events: none; }
+    #intro .card {
+      background: rgba(40, 24, 58, 0.9); border-radius: 26px;
+      border: 1px solid rgba(255, 179, 122, 0.24);
+      box-shadow: 0 20px 60px rgba(10, 5, 20, 0.55);
+      padding: 44px 46px 40px; max-width: 470px;
+    }
+    #intro h1 { font-size: 30px; font-weight: normal; color: #ffe2be; letter-spacing: 0.01em; }
+    #intro p { margin-top: 14px; font-size: 15px; line-height: 1.65; color: #d9c3e0; }
+    #intro .keys { margin-top: 22px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    #intro kbd {
+      font-family: inherit; font-size: 12px; color: #ffcf9e;
+      background: rgba(255, 179, 122, 0.1); border: 1px solid rgba(255, 179, 122, 0.28);
+      border-radius: 7px; padding: 5px 10px;
+    }
+    #intro .go { margin-top: 26px; font-size: 13px; letter-spacing: 0.14em;
+      text-transform: uppercase; color: rgba(255, 179, 122, 0.85); }
+
+    @media (prefers-reduced-motion: reduce) {
+      #back, #caption, #intro { transition: none; }
+    }
+
+    /* On-screen glide controls — shown only on touch devices */
+    #touchControls { display: none; }
+    body.touch #hud { display: none; }
+    body.touch #touchControls { display: block; }
+
+    #touchControls {
+      position: fixed; inset: 0; z-index: 4; pointer-events: none;
+      padding: 0 max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
+    }
+    #touchControls button {
+      -webkit-tap-highlight-color: transparent; touch-action: none; user-select: none;
+      pointer-events: auto;
+      color: rgba(255, 226, 190, 0.95);
+      background: rgba(40, 24, 58, 0.6); border: 1px solid rgba(255, 179, 122, 0.3);
+      backdrop-filter: blur(6px); display: grid; place-items: center;
+      transition: background 0.12s ease, transform 0.12s ease;
+    }
+    #touchControls button:active, #touchControls button.held {
+      background: rgba(255, 179, 122, 0.55); transform: scale(0.94);
+    }
+    #glideFwd, #glideBack {
+      position: absolute; left: 22px; width: 62px; height: 62px; border-radius: 999px; font-size: 22px;
+    }
+    #glideFwd { bottom: 96px; }
+    #glideBack { bottom: 22px; }
+    #resetBtn {
+      position: absolute; top: 20px; right: 18px; width: 46px; height: 46px;
+      border-radius: 999px; font-size: 15px;
+    }
+  </style>
+</head>
+<body>
+<a id="back" href="../../">&larr; all scenes</a>
+
+<div id="caption"><div class="text"></div></div>
+<div id="hud">&uarr; / W to glide on &nbsp;•&nbsp; &darr; / S to glide back &nbsp;•&nbsp; drag to look &nbsp;•&nbsp; click a lantern &nbsp;•&nbsp; R to reset</div>
+
+<div id="touchControls">
+  <button id="glideFwd" aria-label="Glide forward">&#9650;</button>
+  <button id="glideBack" aria-label="Glide backward">&#9660;</button>
+  <button id="resetBtn" aria-label="Reset position">&#8635;</button>
+</div>
+
+<div id="intro">
+  <div class="card">
+    <h1 id="introTitle"></h1>
+    <p id="introSub"></p>
+    <div class="keys">
+      <kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>drag</kbd><kbd>click</kbd><kbd>R</kbd>
+    </div>
+    <div class="go">press any key to begin</div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TITLE, SUBTITLE, PHOTOS } from './photos.js';
+
+document.getElementById('introTitle').textContent = TITLE;
+document.getElementById('introSub').textContent = SUBTITLE;
+
+// ── Palette — dusk fading into a warm horizon ───────────────────────────────
+const C = {
+  skyTop: 0x160f2e, skyUpper: 0x3a2258, skyLower: 0xa9557a, skyHorizon: 0xffb37a,
+  fog: 0xa9557a,
+  gold: 0xffc98a, coral: 0xff9d76, pink: 0xffadd4, lilac: 0xcfb0f0,
+  paper: 0xfff3e0, frame: 0xffdcae, moon: 0xfff6d8, cloud: 0x6b4f86, cloud2: 0x8467a0,
+};
+
+// ── Renderer / scene / camera ────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(C.fog, 60, 240);
+
+const camera = new THREE.PerspectiveCamera(54, innerWidth / innerHeight, 0.1, 500);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 4;
+controls.maxDistance = 30;
+controls.maxPolarAngle = Math.PI / 1.7;
+controls.enablePan = false;
+
+scene.add(new THREE.AmbientLight(0x8f7cc7, 0.85));
+const moonlight = new THREE.DirectionalLight(0xffe9c9, 0.9);
+moonlight.position.set(-18, 30, -10);
+scene.add(moonlight);
+
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+// ── Sky dome — a vertical gradient mapped onto a large inverted sphere ─────
+{
+  const c = document.createElement('canvas');
+  c.width = 1; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.00, '#160f2e');
+  grad.addColorStop(0.42, '#3a2258');
+  grad.addColorStop(0.72, '#a9557a');
+  grad.addColorStop(1.00, '#ffcf9e');
+  g.fillStyle = grad; g.fillRect(0, 0, 1, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(420, 24, 16),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false })
+  );
+  scene.add(dome);
+}
+
+// ── Stars ────────────────────────────────────────────────────────────────────
+{
+  const N = 900, pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const r = rnd(180, 400);
+    const th = rnd(0, Math.PI * 2), ph = rnd(0.05, 0.62) * Math.PI;
+    pos[i * 3] = Math.cos(th) * Math.sin(ph) * r;
+    pos[i * 3 + 1] = Math.cos(ph) * r + 40;
+    pos[i * 3 + 2] = Math.sin(th) * Math.sin(ph) * r;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const starField = new THREE.Points(geo, new THREE.PointsMaterial({
+    color: 0xfff3e0, size: 1.6, sizeAttenuation: false, transparent: true, opacity: 0.8, fog: false,
+  }));
+  scene.add(starField);
+}
+
+// A handful of bigger stars that visibly twinkle
+function starSprite() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,240,220,0.8)');
+  grad.addColorStop(1, 'rgba(255,240,220,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  return new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending });
+}
+const twinkleMat = starSprite();
+const twinkles = [];
+for (let i = 0; i < 16; i++) {
+  const s = new THREE.Sprite(twinkleMat.clone());
+  const r = rnd(140, 340), th = rnd(0, Math.PI * 2), ph = rnd(0.05, 0.55) * Math.PI;
+  s.position.set(Math.cos(th) * Math.sin(ph) * r, Math.cos(ph) * r + 40, Math.sin(th) * Math.sin(ph) * r);
+  const sc = rnd(2.4, 5.5);
+  s.scale.setScalar(sc);
+  scene.add(s);
+  twinkles.push({ mesh: s, phase: rnd(0, 6.3), speed: rnd(0.6, 1.6) });
+}
+
+// Soft glowing moon
+{
+  const moon = new THREE.Mesh(
+    new THREE.SphereGeometry(9, 20, 16),
+    new THREE.MeshBasicMaterial({ color: C.moon, fog: false })
+  );
+  moon.position.set(-140, 90, -220);
+  scene.add(moon);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: twinkleMat.map, color: 0xfff3d0, transparent: true, opacity: 0.5,
+    depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
+  }));
+  halo.position.copy(moon.position);
+  halo.scale.setScalar(70);
+  scene.add(halo);
+}
+
+// ── Canvas-texture helpers ──────────────────────────────────────────────────
+function textTexture(text, { w = 900, h = 190, font = 'italic 600 64px Georgia, serif',
+                             bg = '#fff3e0', fg = '#a9557a' } = {}) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = bg; g.fillRect(0, 0, w, h);
+  g.fillStyle = fg; g.font = font;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, w / 2, h / 2 + 2);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+// Soft radial glow, reused for every lantern halo and every fairy-light bead
+function glowTexture(hex) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const col = new THREE.Color(hex);
+  const rgb = `${Math.round(col.r * 255)},${Math.round(col.g * 255)},${Math.round(col.b * 255)}`;
+  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0, `rgba(${rgb},0.95)`);
+  grad.addColorStop(0.4, `rgba(${rgb},0.45)`);
+  grad.addColorStop(1, `rgba(${rgb},0)`);
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const goldGlowTex = glowTexture(0xffcf9e);
+
+// Stand-in for a photo that has not been added yet
+function placeholderTexture(n) {
+  const w = 600, h = 400;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, w, h);
+  const pairs = [['#ffd9a8', '#ffb0c8'], ['#e8c2ff', '#ffd9a8'], ['#ffc2d6', '#c9b0ff'], ['#ffe0b8', '#ffb0c8']];
+  const [a, b] = pairs[(n - 1) % pairs.length];
+  grad.addColorStop(0, a); grad.addColorStop(1, b);
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(90,50,70,0.75)';
+  g.font = '600 130px Georgia, serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(String(n).padStart(2, '0'), w / 2, h / 2 - 18);
+  g.font = '300 24px Georgia, serif';
+  g.fillStyle = 'rgba(90,50,70,0.7)';
+  g.fillText('add your photo', w / 2, h / 2 + 62);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const texLoader = new THREE.TextureLoader();
+function photoMaterial(path, index) {
+  const mat = new THREE.MeshBasicMaterial({ map: placeholderTexture(index + 1) });
+  if (path) {
+    texLoader.load(
+      '../../' + path,
+      (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        mat.map = tex;
+        mat.needsUpdate = true;
+      },
+      undefined,
+      () => { /* keep the placeholder */ }
+    );
+  }
+  return mat;
+}
+
+// ── The path: a gentle S-curve that also rises and falls through the sky ───
+const SPAN = 32;                       // spacing between lanterns
+const LEAD = 20;                       // runway before the first lantern
+const TAIL = 26;                       // run-out after the last
+const pathPts = [];
+{
+  const total = LEAD + SPAN * (PHOTOS.length - 1) + TAIL;
+  for (let z = -LEAD, i = 0; z <= total - LEAD; z += 10, i++) {
+    pathPts.push(new THREE.Vector3(
+      Math.sin(z * 0.019) * 12 + Math.sin(z * 0.006) * 6,
+      9 + Math.sin(z * 0.028) * 2.4 + Math.sin(z * 0.011) * 1.6,
+      z
+    ));
+  }
+}
+const pathCurve = new THREE.CatmullRomCurve3(pathPts, false, 'catmullrom', 0.4);
+const PATH_LEN = pathCurve.getLength();
+
+function pathFrame(t) {
+  const p = pathCurve.getPointAt(THREE.MathUtils.clamp(t, 0, 1));
+  const tan = pathCurve.getTangentAt(THREE.MathUtils.clamp(t, 0, 1));
+  const right = new THREE.Vector3(tan.z, 0, -tan.x).normalize();
+  return { p, tan, right };
+}
+
+// Glowing trail of motes threading the whole path, so the way ahead reads
+// clearly even with no ground or road surface to follow.
+{
+  const N = 80;
+  for (let i = 0; i < N; i++) {
+    const { p } = pathFrame(i / N);
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: goldGlowTex, transparent: true, opacity: 0.18, depthWrite: false, fog: true,
+      blending: THREE.AdditiveBlending,
+    }));
+    s.position.copy(p);
+    s.scale.setScalar(0.45);
+    scene.add(s);
+  }
+}
+
+// ── Clouds — soft drifting blob clusters at various depths ─────────────────
+function makeCloud(scale, color) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color });
+  const n = 4 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < n; i++) {
+    const b = new THREE.Mesh(new THREE.SphereGeometry(rnd(1.6, 2.6) * scale, 8, 6), mat);
+    b.position.set(rnd(-3, 3) * scale, rnd(-0.4, 0.5) * scale, rnd(-1.4, 1.4) * scale);
+    g.add(b);
+  }
+  return g;
+}
+const clouds = [];
+for (let i = 0; i < 22; i++) {
+  const t = Math.random();
+  const { p, right } = pathFrame(t);
+  const scale = rnd(1.6, 3.4);
+  const cloud = makeCloud(scale, pick([C.cloud, C.cloud2]));
+  const off = rnd(30, 90) * (Math.random() < 0.5 ? -1 : 1);
+  cloud.position.set(p.x + right.x * off, p.y + rnd(-8, 22), p.z + right.z * off + rnd(-30, 30));
+  scene.add(cloud);
+  clouds.push({ mesh: cloud, speed: rnd(0.15, 0.4), z0: cloud.position.z });
+}
+
+// ── Lanterns ─────────────────────────────────────────────────────────────────
+const lanterns = [];          // { group, anchor, world, caption }
+const photoMeshes = [];       // every clickable photo/print mesh, for raycasting
+const bobbers = [];           // { obj, phase, amp, speed } — gentle sway/bob
+
+PHOTOS.forEach((m, i) => {
+  const dist = LEAD + i * SPAN;
+  const t = THREE.MathUtils.clamp(dist / PATH_LEN, 0, 1);
+  const { p, right } = pathFrame(t);
+  const side = i % 2 === 0 ? 1 : -1;
+  const anchor = p.clone().addScaledVector(right, 6.4 * side).add(new THREE.Vector3(0, rnd(2.2, 3.4), 0));
+  const hangDrop = rnd(2.6, 3.6);
+  const base = anchor.clone().sub(new THREE.Vector3(0, hangDrop, 0));
+
+  const g = new THREE.Group();
+  g.position.copy(base);
+  const toPath = p.clone().sub(base).setY(0).normalize();
+  g.rotation.y = Math.atan2(toPath.x, toPath.z);
+
+  // String from the anchor down to the lantern
+  const string = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.02, 0.02, hangDrop, 5),
+    new THREE.MeshBasicMaterial({ color: 0xd8c8a0 })
+  );
+  string.position.set(0, hangDrop / 2, 0);
+  g.add(string);
+
+  const zoomTargets = [];
+  const isCluster = Array.isArray(m.photos) && m.photos.length > 0;
+
+  if (isCluster) {
+    const n = m.photos.length;
+    const cluster = [];
+    const spread = 0.9 * (n - 1);
+    m.photos.forEach((path, pi) => {
+      const fx = n === 1 ? 0 : THREE.MathUtils.lerp(-spread / 2, spread / 2, pi / (n - 1));
+      const fanAngle = n === 1 ? 0 : THREE.MathUtils.lerp(0.2, -0.2, pi / (n - 1));
+      const print = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.2), photoMaterial(path, i * 10 + pi));
+      print.position.set(fx, -0.05 + (pi % 2 === 0 ? 0.08 : -0.05), 0.1 + pi * 0.05);
+      print.rotation.z = fanAngle;
+      const frame = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.66, 1.36),
+        new THREE.MeshBasicMaterial({ color: C.frame, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 })
+      );
+      frame.position.copy(print.position);
+      frame.position.z -= 0.03;
+      frame.rotation.z = fanAngle;
+      g.add(frame, print);
+      zoomTargets.push(print);
+      print.userData.frame = frame;
+      print.userData.cluster = cluster;
+      cluster.push(print);
+    });
+  } else {
+    const frame = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 1.9), new THREE.MeshBasicMaterial({ color: C.frame }));
+    frame.position.set(0, 0, 0.03);
+    g.add(frame);
+    const photo = new THREE.Mesh(new THREE.PlaneGeometry(2.24, 1.64), photoMaterial(m.photo, i));
+    photo.position.set(0, 0, 0.1);
+    g.add(photo);
+    zoomTargets.push(photo);
+  }
+
+  // Little tassel bead underneath
+  const tassel = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), new THREE.MeshBasicMaterial({ color: C.coral }));
+  tassel.position.y = -1.25;
+  g.add(tassel);
+
+  // Soft warm halo behind the lantern
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: goldGlowTex, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  halo.position.set(0, 0, -0.4);
+  halo.scale.setScalar(isCluster ? 4.2 : 4.6);
+  g.add(halo);
+
+  scene.add(g);
+  const world = base.clone();
+  lanterns.push({ group: g, world, caption: m.caption });
+  bobbers.push({ obj: g, base: base.clone(), phase: rnd(0, 6.3), amp: rnd(0.12, 0.22), speed: rnd(0.5, 0.9) });
+  for (const mesh of zoomTargets) photoMeshes.push(mesh);
+});
+
+// ── Fairy lights strung between consecutive lanterns' anchors ──────────────
+const fairyBeads = [];
+for (let i = 0; i < lanterns.length - 1; i++) {
+  const a = lanterns[i].group.position.clone().add(new THREE.Vector3(0, 3.0, 0));
+  const b = lanterns[i + 1].group.position.clone().add(new THREE.Vector3(0, 3.0, 0));
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  mid.y -= a.distanceTo(b) * 0.18; // sag
+  const sagCurve = new THREE.QuadraticBezierCurve3(a, mid, b);
+  const beadCount = Math.max(6, Math.round(a.distanceTo(b) / 1.6));
+  for (let k = 0; k <= beadCount; k++) {
+    const pos = sagCurve.getPoint(k / beadCount);
+    const bead = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: goldGlowTex, color: pick([C.gold, C.coral, C.pink]),
+      transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending,
+    }));
+    bead.position.copy(pos);
+    bead.scale.setScalar(0.5);
+    scene.add(bead);
+    fairyBeads.push({ mesh: bead, phase: rnd(0, 6.3) });
+  }
+  // A faint thread connecting the beads
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(sagCurve.getPoints(24)),
+    new THREE.LineBasicMaterial({ color: 0xd8c8a0, transparent: true, opacity: 0.35 })
+  );
+  scene.add(line);
+}
+
+// ── Start banner — two light pillars with the title strung between them ────
+{
+  const { p, right, tan } = pathFrame(0.006);
+  const g = new THREE.Group();
+  g.position.set(p.x, 0, p.z);
+  const toNext = pathFrame(0.03).p.clone().sub(p).setY(0).normalize();
+  g.rotation.y = Math.atan2(toNext.x, toNext.z);
+  const HALF = 6.2, H = p.y + 5.5;
+  for (const dx of [-HALF, HALF]) {
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.09, H, 8),
+      new THREE.MeshBasicMaterial({ color: C.gold, transparent: true, opacity: 0.85 })
+    );
+    beam.position.set(dx, H / 2, 0);
+    g.add(beam);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: goldGlowTex, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending }));
+    glow.position.set(dx, H, 0);
+    glow.scale.setScalar(3.5);
+    g.add(glow);
+  }
+  const banner = new THREE.Mesh(
+    new THREE.PlaneGeometry(9.6, 1.7),
+    new THREE.MeshBasicMaterial({ map: textTexture(TITLE, { w: 1024, h: 190, font: '600 92px Georgia, serif' }) })
+  );
+  banner.position.set(0, H - 0.4, 0);
+  g.add(banner);
+  scene.add(g);
+}
+
+// ── End marker — a soft plaque hanging at the close of the path ───────────
+{
+  const dist = LEAD + SPAN * (PHOTOS.length - 1) + TAIL * 0.85;
+  const t = THREE.MathUtils.clamp(dist / PATH_LEN, 0, 1);
+  const { p, tan } = pathFrame(t);
+  const g = new THREE.Group();
+  g.position.copy(p);
+  g.rotation.y = Math.atan2(-tan.x, -tan.z);
+
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.6, 1.15),
+    new THREE.MeshBasicMaterial({
+      map: textTexture('thank you for looking ✨', { w: 900, h: 220, font: 'italic 600 62px Georgia, serif' }),
+    })
+  );
+  g.add(plate);
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(4.9, 1.42), new THREE.MeshBasicMaterial({ color: C.gold }));
+  frame.position.z = -0.03;
+  g.add(frame);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: goldGlowTex, transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.scale.setScalar(6);
+  halo.position.z = -0.3;
+  g.add(halo);
+  scene.add(g);
+}
+
+// ── Firefly companion — a small glowing orb that drifts near the camera ────
+const firefly = new THREE.Group();
+{
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), new THREE.MeshBasicMaterial({ color: 0xfff3c2 }));
+  firefly.add(core);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: goldGlowTex, transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glow.scale.setScalar(1.3);
+  firefly.add(glow);
+}
+scene.add(firefly);
+
+// ── Input ───────────────────────────────────────────────────────────────────
+const keys = Object.create(null);
+addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (['ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
+  dismissIntro();
+  if ((e.code === 'Escape' || e.code === 'ArrowUp' || e.code === 'ArrowDown' || e.code === 'KeyW' || e.code === 'KeyS')
+      && (zoomedMesh || zoomAnim)) endZoom();
+});
+addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+const intro = document.getElementById('intro');
+let introGone = false;
+function dismissIntro() {
+  if (introGone) return;
+  introGone = true;
+  intro.classList.add('hide');
+}
+renderer.domElement.addEventListener('pointerdown', dismissIntro);
+
+function resetGlide() {
+  travel = TRAVEL_START;
+  velocity = 0;
+  zoomedMesh = null;
+  zoomAnim = null;
+  controls.enabled = true;
+  applyGlidePosition(true);
+}
+
+// ── Touch controls ──────────────────────────────────────────────────────────
+const isTouch = matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+if (isTouch) {
+  document.body.classList.add('touch');
+  document.getElementById('introSub').textContent += ' Use the on-screen controls to glide.';
+  document.querySelector('#intro .go').textContent = 'tap to begin';
+  document.querySelector('#intro .keys').style.display = 'none';
+}
+function bindHold(el, code) {
+  const press = (e) => { e.preventDefault(); keys[code] = true; el.classList.add('held'); dismissIntro();
+    if (zoomedMesh || zoomAnim) endZoom(); };
+  const release = (e) => { e.preventDefault(); keys[code] = false; el.classList.remove('held'); };
+  el.addEventListener('pointerdown', press);
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => el.addEventListener(ev, release));
+}
+bindHold(document.getElementById('glideFwd'), 'ArrowUp');
+bindHold(document.getElementById('glideBack'), 'ArrowDown');
+document.getElementById('resetBtn').addEventListener('pointerdown', (e) => { e.preventDefault(); dismissIntro(); resetGlide(); });
+
+// ── Click-to-zoom on photos ─────────────────────────────────────────────────
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+const ZOOM_DIST = 2.9;
+const ZOOM_DUR = 550;
+const easeInOutCubic = (x) => x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2;
+
+let zoomedMesh = null;
+let zoomAnim = null;
+let savedOffset = null;
+
+function meshWorldPose(mesh) {
+  const pos = new THREE.Vector3();
+  mesh.getWorldPosition(pos);
+  const normal = new THREE.Vector3(0, 0, 1)
+    .applyQuaternion(mesh.getWorldQuaternion(new THREE.Quaternion()))
+    .normalize();
+  return { pos, normal };
+}
+
+function startZoom(mesh) {
+  const wasZoomed = !!zoomedMesh;
+  const { pos, normal } = meshWorldPose(mesh);
+  if (!wasZoomed) savedOffset = camera.position.clone().sub(glideTarget);
+  zoomAnim = {
+    from: { pos: camera.position.clone(), target: controls.target.clone() },
+    to: { pos: pos.clone().addScaledVector(normal, ZOOM_DIST), target: pos.clone() },
+    start: performance.now(),
+    exiting: false,
+  };
+  zoomedMesh = mesh;
+  controls.enabled = false;
+}
+
+function endZoom() {
+  if (!zoomedMesh && !zoomAnim) return;
+  zoomAnim = {
+    from: { pos: camera.position.clone(), target: controls.target.clone() },
+    to: null,
+    start: performance.now(),
+    exiting: true,
+  };
+  zoomedMesh = null;
+}
+
+function bringToFront(print) {
+  const cluster = print.userData.cluster;
+  if (!cluster) return;
+  const maxZ = Math.max(...cluster.map((m) => m.position.z));
+  if (print.position.z < maxZ) {
+    print.position.z = maxZ + 0.05;
+    if (print.userData.frame) print.userData.frame.position.z = print.position.z - 0.03;
+  }
+}
+
+function handlePointerClick(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.set(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1
+  );
+  raycaster.setFromCamera(pointerNDC, camera);
+  if (zoomedMesh || (zoomAnim && !zoomAnim.exiting)) {
+    const cluster = zoomedMesh?.userData.cluster;
+    if (cluster) {
+      const hit = raycaster.intersectObjects(cluster, false)[0];
+      if (hit && hit.object !== zoomedMesh) { bringToFront(hit.object); startZoom(hit.object); return; }
+    }
+    endZoom();
+    return;
+  }
+  const hit = raycaster.intersectObjects(photoMeshes, false)[0];
+  if (hit) { dismissIntro(); startZoom(hit.object); }
+}
+
+let pointerDownAt = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { pointerDownAt = { x: e.clientX, y: e.clientY }; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!pointerDownAt) return;
+  const dx = e.clientX - pointerDownAt.x, dy = e.clientY - pointerDownAt.y;
+  pointerDownAt = null;
+  if (dx * dx + dy * dy < 36) handlePointerClick(e.clientX, e.clientY);
+});
+
+// ── Glide movement (no physics — a simple eased position along the path) ───
+const GLIDE_ACCEL = 9, GLIDE_MAX = 7.5, GLIDE_DRAG = 5.5;
+const TRAVEL_START = 8;   // clear of the start banner, so there's a runway to the first lantern
+let travel = TRAVEL_START;  // arc-length distance along the path
+let velocity = 0;
+const glideTarget = new THREE.Vector3();
+
+function applyGlidePosition(snapCamera) {
+  const t = THREE.MathUtils.clamp(travel / PATH_LEN, 0, 1);
+  const { p } = pathFrame(t);
+  glideTarget.copy(p);
+  if (snapCamera) {
+    camera.position.set(p.x, p.y + 3.4, p.z - 10);
+    controls.target.copy(glideTarget);
+    controls.update();
+  }
+}
+applyGlidePosition(true);
+
+// ── Caption + auto-look, mirroring the same proximity idea across scenes ───
+const capEl = document.getElementById('caption');
+const capText = capEl.querySelector('.text');
+let shownLantern = null;
+
+function nearestLantern(pos) {
+  let best = null, bestD = Infinity;
+  for (const l of lanterns) {
+    const d = pos.distanceTo(l.world);
+    if (d < bestD) { bestD = d; best = l; }
+  }
+  return bestD < 11 ? best : null;
+}
+function applyCaption(near) {
+  if (near !== shownLantern) {
+    shownLantern = near;
+    if (near) { capText.textContent = near.caption; capEl.classList.add('show'); }
+    else capEl.classList.remove('show');
+  }
+}
+
+let userDragging = false;
+let dragEndedAt = -Infinity;
+controls.addEventListener('start', () => { userDragging = true; });
+controls.addEventListener('end', () => { userDragging = false; dragEndedAt = performance.now(); });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ── Loop ────────────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+const prevGlide = new THREE.Vector3().copy(glideTarget);
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = Math.min(clock.getDelta(), 1 / 30);
+
+  const fwd = keys.KeyW || keys.ArrowUp;
+  const back = keys.KeyS || keys.ArrowDown;
+  if (keys.KeyR) { resetGlide(); keys.KeyR = false; }
+
+  const want = fwd ? GLIDE_MAX : back ? -GLIDE_MAX * 0.7 : 0;
+  const maxStep = (want !== 0 ? GLIDE_ACCEL : GLIDE_DRAG) * dt;
+  velocity += THREE.MathUtils.clamp(want - velocity, -maxStep, maxStep);
+  travel = THREE.MathUtils.clamp(travel + velocity * dt, 0, PATH_LEN);
+  if (travel <= 0 || travel >= PATH_LEN) velocity = 0;
+
+  prevGlide.copy(glideTarget);
+  applyGlidePosition(false);
+
+  const near = nearestLantern(glideTarget);
+
+  if (zoomAnim) {
+    const k = easeInOutCubic(THREE.MathUtils.clamp((performance.now() - zoomAnim.start) / ZOOM_DUR, 0, 1));
+    const to = zoomAnim.exiting
+      ? { pos: glideTarget.clone().add(savedOffset), target: glideTarget }
+      : zoomAnim.to;
+    camera.position.lerpVectors(zoomAnim.from.pos, to.pos, k);
+    controls.target.lerpVectors(zoomAnim.from.target, to.target, k);
+    if (k >= 1) {
+      if (zoomAnim.exiting) controls.enabled = true;
+      zoomAnim = null;
+    }
+  } else if (!zoomedMesh) {
+    const delta = glideTarget.clone().sub(prevGlide);
+    camera.position.add(delta);
+    const autoLookOK = !userDragging && performance.now() - dragEndedAt > 1200;
+    const desiredTarget = near && autoLookOK ? near.world : glideTarget;
+    controls.target.lerp(desiredTarget, 0.05);
+  }
+  controls.update();
+  applyCaption(near);
+
+  // Lantern bob/sway
+  for (const b of bobbers) {
+    b.obj.position.y = b.base.y + Math.sin(t * b.speed + b.phase) * b.amp;
+    b.obj.rotation.z = Math.sin(t * b.speed * 0.7 + b.phase) * 0.03;
+  }
+
+  // Fairy-light twinkle
+  for (const f of fairyBeads) {
+    f.mesh.material.opacity = 0.6 + Math.sin(t * 2.2 + f.phase) * 0.35;
+  }
+  for (const s of twinkles) {
+    s.mesh.material.opacity = 0.35 + Math.sin(t * s.speed + s.phase) * 0.35;
+  }
+
+  // Clouds drift sideways and wrap
+  for (const c of clouds) {
+    c.mesh.position.x += c.speed * dt;
+    if (c.mesh.position.x > glideTarget.x + 120) c.mesh.position.x = glideTarget.x - 120;
+  }
+
+  // Firefly companion — orbits gently near the camera
+  firefly.position.set(
+    glideTarget.x + Math.sin(t * 0.8) * 1.6,
+    glideTarget.y + 1.1 + Math.sin(t * 1.3) * 0.35,
+    glideTarget.z + 2.4 + Math.cos(t * 0.8) * 1.6
+  );
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,1655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Island</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #fce8f4; }
+    canvas { display: block; }
+    #back {
+      position: fixed;
+      top: 20px;
+      left: 22px;
+      z-index: 2;
+      color: rgba(220, 100, 150, 0.9);
+      font-family: Georgia, serif;
+      font-size: 14px;
+      letter-spacing: 0.04em;
+      text-decoration: none;
+      padding: 7px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px solid rgba(220, 100, 150, 0.22);
+      backdrop-filter: blur(6px);
+      transition: background 0.18s ease, transform 0.18s ease;
+    }
+    #back:hover { background: rgba(255, 255, 255, 0.85); transform: translateY(-1px); }
+    #back:focus-visible { outline: 2px solid rgba(220, 100, 150, 0.7); outline-offset: 3px; }
+    @media (prefers-reduced-motion: reduce) {
+      #back { transition: none; }
+      #back:hover { transform: none; }
+    }
+    #hint {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: rgba(220, 100, 150, 0.85);
+      font-family: Georgia, serif;
+      font-size: 13px;
+      letter-spacing: 0.05em;
+      pointer-events: none;
+      text-shadow: 0 1px 4px rgba(255,200,220,0.8);
+    }
+  </style>
+</head>
+<body>
+<a id="back" href="../../">← all scenes</a>
+<div id="hint">✨ drag to explore &nbsp;•&nbsp; pinch to zoom ✨</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
+
+// ── Scene ──────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xfce8f4);
+scene.fog = new THREE.FogExp2(0xfce8f4, 0.008);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 280);
+camera.position.set(0, 24, 43);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// ── Controls ───────────────────────────────────────────────────────────────
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 3;
+controls.maxDistance = 63;
+controls.maxPolarAngle = Math.PI / 2.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+
+// ── Lights ─────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffeef8, 1.1));
+const sun = new THREE.DirectionalLight(0xfff4e0, 1.4);
+sun.position.set(6, 12, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { near:0.5, far:40, left:-8, right:8, top:8, bottom:-8 });
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0xd8d0ff, 0.5);
+fill.position.set(-5, 4, -5);
+scene.add(fill);
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+// Random-scatter points within an annulus [rMin,rMax], respecting minSpacing
+// between points and staying clear of any {x,z,r} zone in `avoid`.
+function scatterPoints(count, rMin, rMax, minSpacing, avoid) {
+  const pts = [];
+  let attempts = 0;
+  const maxAttempts = count * 80;
+  while (pts.length < count && attempts < maxAttempts) {
+    attempts++;
+    const ang = rnd(0, Math.PI*2);
+    const rad = Math.sqrt(rnd(rMin*rMin, rMax*rMax));
+    const x = Math.cos(ang)*rad, z = Math.sin(ang)*rad;
+    let ok = true;
+    for (let i=0; i<pts.length; i++) {
+      if (Math.hypot(x-pts[i][0], z-pts[i][1]) < minSpacing) { ok=false; break; }
+    }
+    if (ok) for (const a of avoid) {
+      if (Math.hypot(x-a.x, z-a.z) < a.r) { ok=false; break; }
+    }
+    if (ok) pts.push([x,z]);
+  }
+  return pts;
+}
+
+// ── Island (blocky / Minecraft-style voxel platform) ────────────────────────
+const ISLAND_RADIUS = 17;
+const TOP_Y = 0.97;
+const clamp255 = v => Math.max(0, Math.min(255, Math.round(v)));
+
+function makePixelTexture(paint) {
+  const N = 16, cvs = document.createElement('canvas');
+  cvs.width = N; cvs.height = N;
+  const ctx = cvs.getContext('2d');
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const [r,g,b] = paint(x, y, N);
+      ctx.fillStyle = `rgb(${clamp255(r)},${clamp255(g)},${clamp255(b)})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  return tex;
+}
+const noisy = (base, variance) => {
+  const n = (Math.random()-0.5) * variance;
+  return [base[0]+n, base[1]+n, base[2]+n];
+};
+
+const grassTopTex  = makePixelTexture(() => noisy([124,198,90], 24));
+const dirtTex      = makePixelTexture(() => noisy([139,94,60], 20));
+const grassSideTex = makePixelTexture((x,y) => noisy(y < 4 ? [116,190,86] : [139,94,60], 22));
+const hillSideTex  = makePixelTexture((x,y) => noisy(y < 12 ? [118,194,88] : [139,94,60], 20));
+const sandTex      = makePixelTexture(() => noisy([228,206,150], 18));
+
+const matGrassTop  = new THREE.MeshLambertMaterial({map:grassTopTex});
+const matDirt      = new THREE.MeshLambertMaterial({map:dirtTex});
+const matGrassSide = new THREE.MeshLambertMaterial({map:grassSideTex});
+const matHillSide  = new THREE.MeshLambertMaterial({map:hillSideTex});
+const matSand      = new THREE.MeshLambertMaterial({map:sandTex, side:THREE.DoubleSide});
+const grassBlockMats = [matGrassSide, matGrassSide, matGrassTop, matDirt, matGrassSide, matGrassSide];
+const hillBlockMats  = [matHillSide, matHillSide, matGrassTop, matDirt, matHillSide, matHillSide];
+
+const BLOCK = 0.98, SPACING = 1.0;
+const blockGeo = new THREE.BoxGeometry(BLOCK, BLOCK, BLOCK);
+
+// Pond: carved out of the grass layer so the dirt layer beneath shows through as a basin floor.
+const pond = { x: -ISLAND_RADIUS*0.42, z: ISLAND_RADIUS*0.38, r: ISLAND_RADIUS*0.16 };
+
+// Rolling hills: small mounds of extra blocks stacked above the base surface.
+const hills = scatterPoints(4, ISLAND_RADIUS*0.25, ISLAND_RADIUS*0.72, 6, [pond])
+  .map(([x,z]) => ({x, z, r: rnd(1.7,2.5)}));
+
+const islandLayers = [
+  {r:ISLAND_RADIUS,       type:'grass'}, {r:ISLAND_RADIUS*0.87, type:'dirt'},
+  {r:ISLAND_RADIUS*0.715, type:'dirt'},  {r:ISLAND_RADIUS*0.53, type:'dirt'},
+  {r:ISLAND_RADIUS*0.34,  type:'dirt'},  {r:ISLAND_RADIUS*0.15, type:'dirt'},
+];
+
+const grassCells = [], dirtCells = [];
+let __blockY = TOP_Y - BLOCK/2;
+islandLayers.forEach(({r, type}) => {
+  const n = Math.ceil(r);
+  for (let ix = -n; ix <= n; ix++) {
+    for (let iz = -n; iz <= n; iz++) {
+      if (Math.hypot(ix, iz) > r) continue;
+      if (type === 'grass' && Math.hypot(ix-pond.x, iz-pond.z) <= pond.r) continue; // pond hole
+      (type === 'grass' ? grassCells : dirtCells).push([ix*SPACING, __blockY, iz*SPACING]);
+    }
+  }
+  __blockY -= SPACING;
+});
+
+// Hill bumps: extra blocks stacked above the surface (2 tiers for a mound shape), own mesh/texture
+// so they read as grassy mounds rather than dirt-sided cliffs.
+const hillCells = [];
+hills.forEach(({x,z,r}) => {
+  const n = Math.ceil(r);
+  for (let ix = Math.round(x)-n; ix <= Math.round(x)+n; ix++) {
+    for (let iz = Math.round(z)-n; iz <= Math.round(z)+n; iz++) {
+      const d = Math.hypot(ix-x, iz-z);
+      if (d > r || Math.hypot(ix,iz) > ISLAND_RADIUS) continue;
+      hillCells.push([ix*SPACING, TOP_Y - BLOCK/2 + SPACING, iz*SPACING]);
+      if (d < r*0.5) hillCells.push([ix*SPACING, TOP_Y - BLOCK/2 + SPACING*2, iz*SPACING]);
+    }
+  }
+});
+
+const grassMesh = new THREE.InstancedMesh(blockGeo, grassBlockMats, grassCells.length);
+const dirtMesh  = new THREE.InstancedMesh(blockGeo, matDirt, dirtCells.length);
+const hillMesh  = new THREE.InstancedMesh(blockGeo, hillBlockMats, hillCells.length);
+[grassMesh, dirtMesh, hillMesh].forEach(m => { m.castShadow = true; m.receiveShadow = true; });
+
+const __m = new THREE.Matrix4();
+grassCells.forEach(([x,y,z], i) => grassMesh.setMatrixAt(i, __m.makeTranslation(x,y,z)));
+dirtCells.forEach(([x,y,z], i) => dirtMesh.setMatrixAt(i, __m.makeTranslation(x,y,z)));
+hillCells.forEach(([x,y,z], i) => hillMesh.setMatrixAt(i, __m.makeTranslation(x,y,z)));
+scene.add(grassMesh, dirtMesh, hillMesh);
+
+// Places a bird can land: filled in as the trees and house are built.
+const perchPoints = [];
+
+// Obstacle list for penguin/chicken collision — also doubles as the avoid-list for scattering décor.
+const obstacles = [];
+obstacles.push({x:pond.x, z:pond.z, r:pond.r+0.6});
+hills.forEach(h => obstacles.push({x:h.x, z:h.z, r:h.r+0.4, isHill:true}));
+// The chicken can fly, so it is allowed onto the hills and walks over them
+// instead of bouncing off — its height comes from groundHeightAt() below.
+const groundObstacles = obstacles.filter(o => !o.isHill);
+
+// Try to step from (s.x,s.z) along `dir`, avoiding `list`. Returns the direction
+// the character should now face.
+//
+// Re-aiming alone is not enough to avoid getting stuck: a character that ends up
+// *inside* an obstacle radius finds every candidate step still blocked, so it
+// re-aims forever without ever moving. When already overlapping, walk straight
+// out of the deepest overlap instead of testing the step at all — same for
+// having drifted off the island edge.
+function stepAvoiding(s, dir, speed, radius, list, islandR) {
+  // Already overlapping something? Push out of whichever one is deepest.
+  let worst = null, worstDepth = 0;
+  for (const o of list) {
+    const depth = (radius + o.r) - Math.hypot(s.x - o.x, s.z - o.z);
+    if (depth > worstDepth) { worstDepth = depth; worst = o; }
+  }
+  if (worst) {
+    const out = Math.atan2(s.x - worst.x, s.z - worst.z);
+    s.x += Math.sin(out) * speed;
+    s.z += Math.cos(out) * speed;
+    return { dir: out, escaped: true };
+  }
+
+  // Already outside the island? Walk back toward the middle.
+  if (Math.hypot(s.x, s.z) >= islandR) {
+    const back = Math.atan2(-s.x, -s.z);
+    s.x += Math.sin(back) * speed;
+    s.z += Math.cos(back) * speed;
+    return { dir: back, escaped: true };
+  }
+
+  const nx = s.x + Math.sin(dir) * speed;
+  const nz = s.z + Math.cos(dir) * speed;
+
+  if (Math.hypot(nx, nz) >= islandR) {
+    return { dir: Math.atan2(-s.x, -s.z) + rnd(-0.4, 0.4), turned: true };
+  }
+  const hit = list.find(o => Math.hypot(nx - o.x, nz - o.z) < (radius + o.r));
+  if (hit) {
+    return { dir: Math.atan2(s.x - hit.x, s.z - hit.z) + rnd(-0.4, 0.4), hit };
+  }
+  s.x = nx; s.z = nz;
+  return { dir, moved: true };
+}
+
+// Surface height at a world position, mirroring how hillCells are stacked: the
+// blocks sit on the integer grid, one tier over the hill footprint and a second
+// over its inner half.
+function groundHeightAt(x, z) {
+  const ix = Math.round(x / SPACING), iz = Math.round(z / SPACING);
+  if (Math.hypot(ix, iz) > ISLAND_RADIUS) return TOP_Y;
+  let y = TOP_Y;
+  for (const h of hills) {
+    const d = Math.hypot(ix - h.x, iz - h.z);
+    if (d > h.r) continue;
+    y = Math.max(y, TOP_Y + SPACING * (d < h.r * 0.5 ? 2 : 1));
+  }
+  return y;
+}
+
+// ── Pond water ─────────────────────────────────────────────────────────────
+// Sandy bed on the basin floor. Without it the pond bottoms out on exposed dirt
+// blocks, so the water had to stay near-opaque to look clean — which in turn left
+// the fish beneath it as barely visible smudges.
+const pondBed = new THREE.Mesh(new THREE.CircleGeometry(pond.r-0.12, 28), matSand);
+pondBed.rotation.x = -Math.PI/2; pondBed.position.set(pond.x, TOP_Y-0.94, pond.z);
+pondBed.receiveShadow = true;
+scene.add(pondBed);
+
+const waterMat = new THREE.MeshLambertMaterial({color:0x7ec8e3, transparent:true, opacity:0.72});
+const water = new THREE.Mesh(new THREE.CircleGeometry(pond.r-0.15, 28), waterMat);
+water.rotation.x = -Math.PI/2; water.position.set(pond.x, TOP_Y-0.06, pond.z);
+scene.add(water);
+
+const sandRing = new THREE.Mesh(new THREE.RingGeometry(pond.r-0.2, pond.r+0.3, 28), matSand);
+sandRing.rotation.x = -Math.PI/2; sandRing.position.set(pond.x, TOP_Y-0.02, pond.z);
+scene.add(sandRing);
+
+scatterPoints(4, 0.3, pond.r-0.5, 0.7, []).forEach(([lx,lz]) => {
+  const pad = new THREE.Mesh(new THREE.CircleGeometry(rnd(0.22,0.34), 10), new THREE.MeshLambertMaterial({color:0x6fbf7a}));
+  pad.rotation.x = -Math.PI/2; pad.position.set(pond.x+lx, TOP_Y-0.045, pond.z+lz);
+  scene.add(pad);
+});
+
+function makeReed(x,z){
+  const g = new THREE.Group();
+  const stalkMat = new THREE.MeshLambertMaterial({color:0x5aad72});
+  const tipMat = new THREE.MeshLambertMaterial({color:0x8a5a3c});
+  for(let i=0;i<3;i++){
+    const h = rnd(0.4,0.7);
+    const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.02,h,5), stalkMat);
+    stalk.position.set(rnd(-0.1,0.1), h/2, rnd(-0.1,0.1)); g.add(stalk);
+    const tip = new THREE.Mesh(new THREE.CapsuleGeometry(0.02,0.09,4,6), tipMat);
+    tip.position.set(stalk.position.x, h+0.05, stalk.position.z); g.add(tip);
+  }
+  g.position.set(x,TOP_Y,z); return g;
+}
+scatterPoints(5, pond.r+0.1, pond.r+0.6, 0.8, []).forEach(([x,z]) => scene.add(makeReed(pond.x+x, pond.z+z)));
+
+// ── House ──────────────────────────────────────────────────────────────────
+function makeHouse() {
+  const g = new THREE.Group();
+  const wallMat    = new THREE.MeshLambertMaterial({color:0xfff3e2});
+  const roofMat    = new THREE.MeshLambertMaterial({color:0xff96b0});
+  const doorMat    = new THREE.MeshLambertMaterial({color:0xa9744f});
+  const windowMat  = new THREE.MeshLambertMaterial({color:0xbfe8ff});
+  const frameMat   = new THREE.MeshLambertMaterial({color:0xe8a0b8});
+  const chimneyMat = new THREE.MeshLambertMaterial({color:0xd9a888});
+
+  const W = 1.5, D = 1.5, H = 1.15;
+
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(W,H,D), wallMat);
+  walls.position.y = H/2; walls.castShadow = true; walls.receiveShadow = true; g.add(walls);
+
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(1.2,0.85,4), roofMat);
+  roof.rotation.y = Math.PI/4; roof.position.y = H + 0.42; roof.castShadow = true; g.add(roof);
+
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.36,0.66), doorMat);
+  door.position.set(0, 0.33, D/2+0.01); g.add(door);
+
+  [-0.48,0.48].forEach(x=>{
+    const frame = new THREE.Mesh(new THREE.PlaneGeometry(0.34,0.34), frameMat);
+    frame.position.set(x, 0.78, D/2+0.005); g.add(frame);
+    const win = new THREE.Mesh(new THREE.PlaneGeometry(0.26,0.26), windowMat);
+    win.position.set(x, 0.78, D/2+0.012); g.add(win);
+  });
+
+  const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.2,0.62,0.2), chimneyMat);
+  chimney.position.set(0.42, H+0.55, -0.28); chimney.castShadow = true; g.add(chimney);
+  g._chimney = chimney;
+
+  return g;
+}
+
+const house = makeHouse();
+house.position.set(ISLAND_RADIUS*0.64, 0.97, ISLAND_RADIUS*0.52);
+scene.add(house);
+obstacles.push({x:house.position.x, z:house.position.z, r:1.5});
+// Roof ridge: walls 1.15 + cone offset 0.42 + half its 0.85 height, minus a little
+// so a perched bird reads as sitting on the roof rather than balanced on the point.
+perchPoints.push({x: house.position.x, y: TOP_Y + 1.85, z: house.position.z, taken: false});
+
+const smokeMat = new THREE.MeshLambertMaterial({color:0xf0eef5, transparent:true, opacity:0.5});
+const smokePuffs = [];
+for(let i=0;i<6;i++){
+  const puff = new THREE.Mesh(new THREE.SphereGeometry(0.085,8,6), smokeMat.clone());
+  scene.add(puff);
+  smokePuffs.push({mesh:puff, t:i/6, seed:rnd(0,10)});
+}
+
+// ── Rocks ──────────────────────────────────────────────────────────────────
+function makeRock(x,z,sc){
+  sc = sc||1;
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({color:pick([0xb8b0c0,0xa8a0b0,0xc4bcc8])});
+  const count = 2+Math.floor(Math.random()*2);
+  for(let i=0;i<count;i++){
+    const s = (0.16+Math.random()*0.16)*sc;
+    const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s,0), mat);
+    rock.position.set(rnd(-0.13,0.13)*sc, s*0.55, rnd(-0.13,0.13)*sc);
+    rock.rotation.set(rnd(0,Math.PI),rnd(0,Math.PI),rnd(0,Math.PI));
+    rock.castShadow = true; rock.receiveShadow = true;
+    g.add(rock);
+  }
+  g.position.set(x,0.97,z); return g;
+}
+scatterPoints(12, 1.8, ISLAND_RADIUS*0.92, 1.6, obstacles).forEach(([x,z]) => {
+  scene.add(makeRock(x,z,rnd(0.8,1.5)));
+  obstacles.push({x,z,r:0.32});
+});
+
+// ── Trees ──────────────────────────────────────────────────────────────────
+function makeTree(x, z, sc) {
+  sc = sc||1;
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.07*sc,0.1*sc,0.55*sc,8), new THREE.MeshLambertMaterial({color:0x9a6840}));
+  trunk.position.y = 0.28*sc; trunk.castShadow = true; g.add(trunk);
+  const leafMat = new THREE.MeshLambertMaterial({color:pick([0x7ecfa4,0x94dab4,0xb0e8c4,0x68c090])});
+  for(let i=0;i<3;i++){
+    const b = new THREE.Mesh(new THREE.SphereGeometry((0.22+i*0.04)*sc,9,7), leafMat);
+    b.position.set(rnd(-0.12,0.12)*sc,(0.56+i*0.2)*sc,rnd(-0.12,0.12)*sc); b.castShadow=true; g.add(b);
+  }
+  g.position.set(x,0.97,z); return g;
+}
+
+scatterPoints(24, 2.2, ISLAND_RADIUS*0.93, 1.5, obstacles).forEach(([x,z]) => {
+  const sc = rnd(0.65,1.3);
+  scene.add(makeTree(x,z,sc));
+  obstacles.push({x,z,r:0.45});
+  // The top leaf blob sits at (0.56+0.4)*sc with radius 0.30*sc, so its crown is
+  // about 1.26*sc up; perch slightly inside that so the bird settles into the foliage.
+  perchPoints.push({x, y: TOP_Y + 1.18*sc, z, taken: false});
+});
+
+// ── Flowers (detailed 3D) ──────────────────────────────────────────────────
+function makeFlower(x, z) {
+  const g = new THREE.Group();
+  const sc = rnd(0.8, 1.3);
+
+  // Stem
+  const stemMat = new THREE.MeshLambertMaterial({color:0x5aad72});
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.025*sc,0.035*sc,0.5*sc,8), stemMat);
+  stem.position.y = 0.25*sc; g.add(stem);
+
+  // Leaf
+  const leafShape = new THREE.Shape();
+  leafShape.moveTo(0,0); leafShape.bezierCurveTo(0.08,0.1,0.15,0.18,0,0.22);
+  leafShape.bezierCurveTo(-0.08,0.14,-0.06,0.06,0,0);
+  const leafGeo = new THREE.ShapeGeometry(leafShape);
+  const leafMesh = new THREE.Mesh(leafGeo, new THREE.MeshLambertMaterial({color:0x68b870,side:THREE.DoubleSide}));
+  leafMesh.scale.setScalar(sc);
+  leafMesh.position.set(0.12*sc, 0.22*sc, 0); leafMesh.rotation.z = -0.4; g.add(leafMesh);
+
+  // Petals
+  const petalColor = pick([0xffadd4,0xffbfe4,0xff9ec8,0xffdce8,0xe8b0ff,0xffccaa,0xff85b3]);
+  const petalMat = new THREE.MeshLambertMaterial({color:petalColor});
+  for(let i=0;i<6;i++){
+    const a = (i/6)*Math.PI*2;
+    const petal = new THREE.Mesh(new THREE.SphereGeometry(0.095*sc,8,6), petalMat);
+    petal.position.set(Math.cos(a)*0.17*sc, 0.52*sc, Math.sin(a)*0.17*sc);
+    petal.scale.set(1, 0.55, 1.5); g.add(petal);
+  }
+
+  // Center disk
+  const center = new THREE.Mesh(new THREE.CylinderGeometry(0.1*sc,0.1*sc,0.05*sc,12),
+    new THREE.MeshLambertMaterial({color:0xffdd55}));
+  center.position.y = 0.54*sc; g.add(center);
+
+  // Stamen dots
+  for(let i=0;i<5;i++){
+    const a = (i/5)*Math.PI*2;
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.022*sc,5,4),
+      new THREE.MeshLambertMaterial({color:0xff9900}));
+    dot.position.set(Math.cos(a)*0.07*sc, 0.58*sc, Math.sin(a)*0.07*sc);
+    g.add(dot);
+  }
+
+  g.position.set(x, 0.97, z);
+  g.rotation.y = rnd(0, Math.PI*2);
+  return g;
+}
+
+scatterPoints(60, 1.0, ISLAND_RADIUS*0.94, 0.5, obstacles).forEach(([x,z]) => {
+  scene.add(makeFlower(x,z));
+  obstacles.push({x,z,r:0.22});
+});
+
+// ── Hearts ─────────────────────────────────────────────────────────────────
+function makeHeart(size, color) {
+  size = size||0.3;
+  const s = size;
+  const sh = new THREE.Shape();
+  sh.moveTo(0,s*0.6);
+  sh.bezierCurveTo(s*0.05,s,s*0.7,s,s*0.7,s*0.5);
+  sh.bezierCurveTo(s*0.7,s*0.2,s*0.4,-s*0.1,0,-s*0.6);
+  sh.bezierCurveTo(-s*0.4,-s*0.1,-s*0.7,s*0.2,-s*0.7,s*0.5);
+  sh.bezierCurveTo(-s*0.7,s,-s*0.05,s,0,s*0.6);
+  const geo = new THREE.ExtrudeGeometry(sh,{depth:size*0.28,bevelEnabled:true,bevelSize:0.018,bevelThickness:0.018,bevelSegments:3});
+  geo.center();
+  return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({color:color||pick([0xff6b9d,0xff8cb4,0xffb0cc,0xff4d80])}));
+}
+
+scatterPoints(6, 1.5, ISLAND_RADIUS*0.75, 2.0, obstacles).forEach(([x,z]) => {
+  const h = makeHeart(0.22); h.position.set(x,1.52,z);
+  h.rotation.x=-Math.PI/2; h.rotation.z=rnd(-0.25,0.25); scene.add(h);
+});
+
+const floatingHearts = [];
+for(let i=0;i<20;i++){
+  const h = makeHeart(rnd(0.13,0.28));
+  const ang = (i/20)*Math.PI*2+rnd(0,0.4), rad = rnd(ISLAND_RADIUS*0.5,ISLAND_RADIUS*1.05);
+  h.position.set(Math.cos(ang)*rad, rnd(1.5,6.5), Math.sin(ang)*rad);
+  h.rotation.set(rnd(0,Math.PI),rnd(0,Math.PI),rnd(0,Math.PI));
+  floatingHearts.push({mesh:h,speed:rnd(0.3,0.7),phase:rnd(0,Math.PI*2),rotSpd:rnd(0.2,0.5),baseY:h.position.y});
+  scene.add(h);
+}
+
+// ── Text sprite ────────────────────────────────────────────────────────────
+function makeTextSprite(text) {
+  const W=512,H=128,cvs=document.createElement('canvas');
+  cvs.width=W; cvs.height=H;
+  const ctx=cvs.getContext('2d');
+  ctx.shadowColor='rgba(255,120,160,0.6)'; ctx.shadowBlur=18;
+  ctx.font='bold 46px Georgia,serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.strokeStyle='rgba(255,255,255,0.9)'; ctx.lineWidth=5; ctx.strokeText(text,W/2,H/2);
+  ctx.fillStyle='#e84d88'; ctx.fillText(text,W/2,H/2);
+  const tex=new THREE.CanvasTexture(cvs);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true}));
+  sp.scale.set(5.5,1.375,1); return sp;
+}
+const textSprite = makeTextSprite('I love you... \u{1F495}');
+// textSprite.position.set(0,5.2,0); scene.add(textSprite);
+
+// ── Clouds ─────────────────────────────────────────────────────────────────
+function makeCloud(x,y,z,sc){
+  sc=sc||1; const g=new THREE.Group();
+  const mat=new THREE.MeshLambertMaterial({color:0xfff0f8});
+  [[0,0,0,1.0],[-1.1,0,0,0.75],[1.1,0,0,0.75],[-0.6,0.45,0,0.65],[0.6,0.45,0,0.65]]
+  .forEach(([ox,oy,oz,r])=>{
+    const m=new THREE.Mesh(new THREE.SphereGeometry(r*0.65*sc,8,6),mat);
+    m.position.set(ox*sc,oy*sc,oz*sc); g.add(m);
+  }); g.position.set(x,y,z); return g;
+}
+scene.add(makeCloud(-26,9,-19,1.7));  scene.add(makeCloud(26,11,-14,1.85));
+scene.add(makeCloud(-21,13,14,1.5));  scene.add(makeCloud(28,7.5,15,1.55));
+scene.add(makeCloud(0,15,-28,2.0));
+
+// ── Sparkles ───────────────────────────────────────────────────────────────
+const verts=[];
+for(let i=0;i<520;i++) verts.push(rnd(-56,56),rnd(0,42),rnd(-56,56));
+const sparkGeo=new THREE.BufferGeometry();
+sparkGeo.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));
+scene.add(new THREE.Points(sparkGeo,new THREE.PointsMaterial({color:0xffb0d8,size:0.13,transparent:true,opacity:0.75})));
+
+// ── Penguin ────────────────────────────────────────────────────────────────
+function makePenguin() {
+  const root = new THREE.Group();
+  const black = new THREE.MeshLambertMaterial({color:0x88c8f0});
+  const white = new THREE.MeshLambertMaterial({color:0xf5f0ff});
+  const orange= new THREE.MeshLambertMaterial({color:0xff9944});
+  const pink  = new THREE.MeshLambertMaterial({color:0xffaacc});
+
+  // Body
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.28,12,10), black);
+  body.scale.set(1,1.18,0.9); body.position.y=0.3; root.add(body);
+
+  // Belly patch
+  const belly = new THREE.Mesh(new THREE.SphereGeometry(0.19,10,8), white);
+  belly.scale.set(1,1.1,0.6); belly.position.set(0,0.32,0.18); root.add(belly);
+
+  // Head
+  const head = new THREE.Group();
+  const headBall = new THREE.Mesh(new THREE.SphereGeometry(0.19,12,10), black);
+  headBall.position.set(0,0.62,0); head.add(headBall);
+
+  // Face white patch
+  const face = new THREE.Mesh(new THREE.SphereGeometry(0.13,10,8), white);
+  face.scale.set(1,1,0.5); face.position.set(0,0.62,0.14); head.add(face);
+
+  // Eyes
+  [-1,1].forEach(side=>{
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.033,7,6),
+      new THREE.MeshLambertMaterial({color:0x111111}));
+    eye.position.set(side*0.08,0.67,0.16); head.add(eye);
+    const shine = new THREE.Mesh(new THREE.SphereGeometry(0.012,5,4),
+      new THREE.MeshLambertMaterial({color:0xffffff}));
+    shine.position.set(side*0.085,0.675,0.185); head.add(shine);
+  });
+
+  // Blush
+  [-1,1].forEach(side=>{
+    const blush = new THREE.Mesh(new THREE.SphereGeometry(0.035,6,5), pink);
+    blush.scale.set(1,0.5,0.3); blush.position.set(side*0.11,0.625,0.175); head.add(blush);
+  });
+
+  // Beak
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.045,0.09,6), orange);
+  beak.rotation.x=Math.PI/2; beak.position.set(0,0.615,0.23); head.add(beak);
+
+  root.add(head);
+  root._head = head;
+
+  // Wings
+  const wingL = new THREE.Group(), wingR = new THREE.Group();
+  const wgL = new THREE.Mesh(new THREE.SphereGeometry(0.12,8,6),black);
+  wgL.scale.set(0.45,0.9,0.3); wgL.position.set(0,-0.05,0); wingL.add(wgL);
+  wingL.position.set(-0.28,0.38,0); root.add(wingL);
+
+  const wgR = new THREE.Mesh(new THREE.SphereGeometry(0.12,8,6),black);
+  wgR.scale.set(0.45,0.9,0.3); wgR.position.set(0,-0.05,0); wingR.add(wgR);
+  wingR.position.set(0.28,0.38,0); root.add(wingR);
+
+  root._wingL=wingL; root._wingR=wingR;
+
+  // Feet
+  const footL = new THREE.Group(), footR = new THREE.Group();
+  [footL,footR].forEach((f,i)=>{
+    const foot = new THREE.Mesh(new THREE.SphereGeometry(0.065,7,5), orange);
+    foot.scale.set(1.4,0.4,1.1); f.add(foot);
+    f.position.set(i===0?-0.1:0.1,0.04,0.05); root.add(f);
+  });
+  root._footL=footL; root._footR=footR;
+
+  return root;
+}
+
+const penguin = makePenguin();
+penguin.position.set(2.2, 0.97, 0);
+penguin.scale.setScalar(0.85);
+scene.add(penguin);
+
+const chickenState = {
+  model: null,
+  mixer: null,
+  actions: {},
+  current: null,
+  x: -0.6,
+  z: -0.3,
+  footOffset: 0,   // ground -> model origin
+  groundY: TOP_Y,  // smoothed surface height under the chicken
+  dir: rnd(0, Math.PI * 2),
+  speed: 0.012,
+  turnTimer: rnd(1.2, 3.2),
+  gesture: 'walk',
+  flyElapsed: 0,
+  flyY: 0,
+  nextFly: rnd(5, 10),
+};
+// The rig swings each thigh +/-30 degrees over a 35.4-unit leg, so one cycle
+// (two steps) covers ~70.8 of the model's 189 units of height. Used to keep the
+// footfalls in step with how fast the chicken actually crosses the ground.
+const CHICKEN_STRIDE = 0.3746; // body heights per walk cycle
+
+const FLY_DURATION = 2.0;
+const FLY_HEIGHT = 1.6;
+const FLY_SPEED_MULT = 2.6;
+
+// chicken by jeremy [CC-BY] (https://creativecommons.org/licenses/by/3.0/) via Poly Pizza (https://poly.pizza/m/1YE8U35HXsI)
+// The original model is a single rigid mesh with no skeleton, so its legs could
+// never move. chicken_rigged.glb is that same mesh with an armature added
+// (hips/spine/head/tail + a thigh and foot per leg) and walk / idle / fly clips.
+const loader = new GLTFLoader();
+loader.setMeshoptDecoder(MeshoptDecoder); // rubber_duck.glb ships meshopt-compressed geometry
+loader.load(
+  '../../objects/chicken/chicken_rigged.glb',
+  (gltf) => {
+    const chicken = gltf.scene;
+    const box = new THREE.Box3().setFromObject(chicken);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+
+    // Normalize imported model size so it fits this scene.
+    const targetHeight = 0.75;
+    if (size.y > 0) {
+      const scale = targetHeight / size.y;
+      chicken.scale.setScalar(scale);
+    }
+
+    // Keep the offset from ground to model origin, so the chicken can be placed
+    // on whatever surface is under it rather than one fixed height.
+    box.setFromObject(chicken);
+    chickenState.footOffset = -box.min.y;
+    chickenState.groundY = groundHeightAt(chickenState.x, chickenState.z);
+    chicken.position.set(
+      chickenState.x,
+      chickenState.groundY + chickenState.footOffset,
+      chickenState.z
+    );
+
+    chicken.traverse((obj) => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        obj.frustumCulled = false; // skinned bounds go stale as the pose changes
+      }
+    });
+
+    chickenState.mixer = new THREE.AnimationMixer(chicken);
+    gltf.animations.forEach((clip) => {
+      chickenState.actions[clip.name] = chickenState.mixer.clipAction(clip);
+    });
+
+    // Match the walk cycle to the ground speed so the feet don't skate
+    const walk = chickenState.actions.walk;
+    if (walk) {
+      const perSec = chickenState.speed * 60;                  // units/second
+      const cycleSec = (targetHeight * CHICKEN_STRIDE) / perSec;
+      walk.timeScale = walk.getClip().duration / cycleSec;
+    }
+    chickenState.current = walk;
+    if (walk) walk.play();
+
+    chickenState.model = chicken;
+    scene.add(chicken);
+  },
+  undefined,
+  (error) => {
+    console.error('Failed to load GLB:', error);
+  }
+);
+
+// The duck's materials carry flat colors straight from the DCC tool, which read
+// a little washed out under this scene's soft lighting. Push saturation up in
+// HSL so each material keeps its own hue but reads vividly at duck size.
+function punchUpColor(material, { saturation = 1.5, lightness = 1.05 } = {}) {
+  // Leave material.side alone: the eye and glare geometry is wound inward and
+  // only shows up because the model ships doubleSided.
+  material.roughness = 0.35; // slightly glossy, like real rubber
+  material.metalness = 0;
+
+  const hsl = { h: 0, s: 0, l: 0 };
+  material.color.getHSL(hsl);
+  material.color.setHSL(
+    hsl.h,
+    Math.min(hsl.s * saturation, 1),
+    Math.min(hsl.l * lightness, 1)
+  );
+}
+
+// ── Duck: paddles around the pond ───────────────────────────────────────────
+const duckState = {
+  model: null,
+  x: pond.x,
+  z: pond.z,
+  yBase: TOP_Y,
+  dir: rnd(0, Math.PI * 2),
+  speed: 0.007,
+  turnTimer: rnd(1.0, 2.6),
+  tilt: null,
+  gesture: 'swim',   // 'swim' | 'dabble'
+  pitch: 0,          // current nose-down angle, eased toward the target
+  dabbleT: 0,
+  nextDabble: rnd(6, 14),
+  wakeTimer: 0,
+};
+const WATER_Y = TOP_Y - 0.06;      // matches the pond surface mesh
+const SWIM_RADIUS = pond.r - 0.45; // keep the duck off the sandy rim
+const DABBLE_PITCH = 0.95;         // radians nose-down: head under, tail up
+const DABBLE_TIME = 2.2;
+
+loader.load(
+  '../../objects/duck/rubber_duck.glb',
+  (gltf) => {
+    // Three nested pivots, so heading, pitch and the model's own facing offset
+    // stay independent:
+    //   duck  -> heading (rotation.y)
+    //   tilt  -> pitch/roll, used to tip the duck forward when it dabbles
+    //   face  -> bakes the model's 90-degree facing offset once, so the assembly
+    //            faces +Z and `duck.rotation.y = dir` needs no magic constant
+    // The exported model is also not centred on its own origin, so it gets
+    // recentred inside `face` — otherwise it swings around a point off to one side.
+    const duck = new THREE.Group();
+    const tilt = new THREE.Group();
+    const face = new THREE.Group();
+    const inner = gltf.scene;
+    face.add(inner);
+    tilt.add(face);
+    duck.add(tilt);
+
+    let box = new THREE.Box3().setFromObject(inner);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+
+    // Normalize by the largest dimension so the duck fits the scene whichever
+    // way the source model happens to be proportioned.
+    const targetSize = 0.5;
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim > 0) inner.scale.setScalar(targetSize / maxDim);
+
+    // Recentre horizontally on the pivot, and rest the hull on the waterline.
+    box.setFromObject(inner);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+    inner.position.x -= center.x;
+    inner.position.z -= center.z;
+    inner.position.y -= box.min.y;
+
+    box.setFromObject(inner);
+    duckState.yBase = WATER_Y - box.getSize(size).y * 0.22; // sit it in the water
+    duck.position.set(duckState.x, duckState.yBase, duckState.z);
+
+    // Which way does the model face? Measure it rather than assume: find the
+    // bill's centroid and yaw `face` so it points along +Z, matching the
+    // (sin dir, cos dir) movement used everywhere else.
+    //
+    // This was previously a hardcoded 90 degrees inherited from an earlier duck
+    // model. This one already faces +Z, so that constant had the duck swimming
+    // exactly sideways — and made the dabble roll it over instead of tipping it
+    // nose-first, since a pitch axis is only a pitch if the body faces +Z.
+    duck.updateMatrixWorld(true);
+    const bodyCentre = new THREE.Vector3();
+    box.setFromObject(inner);
+    box.getCenter(bodyCentre);
+    let bill = null;
+    inner.traverse((obj) => {
+      if (!obj.isMesh || bill) return;
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      if (!mats.some((m) => m && /beak|bill/i.test(m.name || ''))) return;
+      const attr = obj.geometry.attributes.position;
+      const v = new THREE.Vector3(), sum = new THREE.Vector3();
+      for (let i = 0; i < attr.count; i++) {
+        sum.add(v.fromBufferAttribute(attr, i).applyMatrix4(obj.matrixWorld));
+      }
+      bill = sum.divideScalar(attr.count);
+    });
+    if (bill) {
+      const fwd = bill.sub(bodyCentre);
+      fwd.y = 0;
+      if (fwd.lengthSq() > 1e-6) face.rotation.y = Math.atan2(-fwd.x, fwd.z);
+    }
+    duckState.tilt = tilt;
+
+    inner.traverse((obj) => {
+      if (obj.isMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m) => m && punchUpColor(m));
+      }
+    });
+    duckState.model = duck;
+    scene.add(duck);
+  },
+  undefined,
+  (error) => {
+    console.error('Failed to load duck GLB:', error);
+  }
+);
+
+// ── Pond life: the duck's wake, and fish under the surface ──────────────────
+const RIPPLE_Y = WATER_Y + 0.012;   // just clear of the water plane
+
+// Pool of expanding rings, reused so the wake never allocates mid-frame
+const rippleGeo = new THREE.RingGeometry(0.86, 1.0, 20);
+const ripples = [];
+for (let i = 0; i < 18; i++) {
+  const mesh = new THREE.Mesh(rippleGeo, new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0,
+    side: THREE.DoubleSide, depthWrite: false,
+  }));
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.visible = false;
+  scene.add(mesh);
+  ripples.push({ mesh, life: 0, dur: 1, from: 0.1, to: 1, strength: 0.5 });
+}
+
+function spawnRipple(x, z, from, to, dur, strength) {
+  const r = ripples.find(o => o.life <= 0);
+  if (!r) return;                       // pool exhausted; drop it rather than stall
+  Object.assign(r, { life: dur, dur, from, to, strength });
+  r.mesh.position.set(x, RIPPLE_Y, z);
+  r.mesh.scale.setScalar(from);
+  r.mesh.visible = true;
+}
+
+// ── Fish ───────────────────────────────────────────────────────────────────
+// The pond surface is 82% opaque, so a fish contributes only ~18% of the final
+// pixel. Pale colours vanish entirely; these are saturated and darker than the
+// water so they read as shapes moving beneath it.
+const FISH_COLORS = [0xd85f28, 0xe07a34, 0xc24a1e, 0xe8913f, 0x2f5f78];
+function makeFish(color) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({color});
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.075, 7, 5), mat);
+  body.scale.set(0.72, 0.55, 1.75);
+  g.add(body);
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.12, 4), mat);
+  // A cone points +Y; -90 degrees about X sends it to -Z, i.e. astern. (+90 sends
+  // it forward into the body, which reads as a spike rather than a tail.)
+  tail.rotation.x = -Math.PI / 2;
+  tail.position.z = -0.16;
+  g.add(tail);
+  return g;
+}
+
+const fishes = [];
+for (let i = 0; i < 6; i++) {
+  const model = makeFish(pick(FISH_COLORS));
+  const fish = {
+    model,
+    ang: rnd(0, Math.PI * 2),
+    rad: rnd(0.45, SWIM_RADIUS - 0.3),
+    speed: rnd(0.3, 0.7) * (Math.random() < 0.5 ? 1 : -1),
+    depth: rnd(0.14, 0.34),          // below the waterline
+    phase: rnd(0, Math.PI * 2),
+    dart: 0,                         // decays after being startled
+  };
+  scene.add(model);
+  fishes.push(fish);
+}
+
+// Something hitting the water sends the nearby fish scattering deeper and wider
+function startleFish(x, z, reach) {
+  for (const f of fishes) {
+    const fx = pond.x + Math.cos(f.ang) * f.rad;
+    const fz = pond.z + Math.sin(f.ang) * f.rad;
+    if (Math.hypot(fx - x, fz - z) > reach) continue;
+    f.dart = 1;
+    f.rad = THREE.MathUtils.clamp(f.rad + rnd(0.25, 0.5), 0.3, SWIM_RADIUS - 0.2);
+    f.depth = THREE.MathUtils.clamp(f.depth + rnd(0.04, 0.12), 0.1, 0.42);
+  }
+}
+
+// ── Man: wanders the island, switching between his animation clips ──────────
+// Converted from four Mixamo FBX exports into one GLB: a single skinned mesh
+// plus the clips walk / idle / dance / moonwalk.
+const MAN_HEIGHT = 1.5; // world units tall
+
+// Locomotion clips had their hip translation stripped during conversion, so the
+// movement is driven here. `stride` is the clip's original travel in body heights
+// per second, so the footwork keeps pace with the ground; `sign` is -1 for the
+// moonwalk, which glides backward while facing forward.
+const MAN_GAITS = {
+  walk:     { stride: 0.6263, sign:  1 },
+  moonwalk: { stride: 0.3720, sign: -1 },
+};
+
+const manState = {
+  model: null,
+  mixer: null,
+  actions: {},
+  current: null,
+  x: 4.5,
+  z: 4.5,
+  footOffset: 0,
+  groundY: TOP_Y,
+  dir: rnd(0, Math.PI * 2),
+  turnTimer: rnd(1.5, 3.5),
+  gesture: 'walk',
+  gestureTick: rnd(4, 8),
+};
+
+loader.load(
+  '../../objects/man/man.glb',
+  (gltf) => {
+    const man = gltf.scene;
+
+    const box = new THREE.Box3().setFromObject(man);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    if (size.y > 0) man.scale.setScalar(MAN_HEIGHT / size.y);
+
+    box.setFromObject(man);
+    manState.footOffset = -box.min.y;
+    manState.groundY = groundHeightAt(manState.x, manState.z);
+    man.position.set(manState.x, manState.groundY + manState.footOffset, manState.z);
+
+    man.traverse((obj) => {
+      if (obj.isMesh || obj.isSkinnedMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        obj.frustumCulled = false; // skinned bounds go stale as the pose changes
+      }
+    });
+
+    manState.mixer = new THREE.AnimationMixer(man);
+    gltf.animations.forEach((clip) => {
+      const action = manState.mixer.clipAction(clip);
+      action.setLoop(THREE.LoopRepeat);
+      manState.actions[clip.name] = action;
+    });
+
+    // Start walking; playGesture cross-fades from here on
+    manState.current = manState.actions.walk;
+    if (manState.current) manState.current.play();
+
+    manState.model = man;
+    scene.add(man);
+  },
+  undefined,
+  (error) => {
+    console.error('Failed to load man GLB:', error);
+  }
+);
+
+// ── Birds: circle the island, flapping to climb and gliding to descend ──────
+// Procedurally built and rigged in Blender — see tools/bird/. 21 bones with
+// blended weights, and clips flap / glide / perch.
+const BIRD_COUNT = 4;
+const BIRD_SPAN = 0.8;   // world units, wingtip to wingtip
+const birds = [];
+
+loader.load(
+  '../../objects/bird/bird.glb',
+  (gltf) => {
+    const box = new THREE.Box3().setFromObject(gltf.scene);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const scale = BIRD_SPAN / Math.max(size.x, size.y, size.z);
+    // Distance from the model origin down to the feet, so a perched bird sits on
+    // the surface instead of sinking into it.
+    const footOffset = -box.min.y * scale;
+
+    for (let i = 0; i < BIRD_COUNT; i++) {
+      // Skinned meshes need SkeletonUtils.clone — a plain clone() shares the
+      // skeleton, so every bird would animate in lockstep off one mixer.
+      const model = cloneSkinned(gltf.scene);
+      model.scale.setScalar(scale);
+      model.traverse((obj) => {
+        if (obj.isMesh || obj.isSkinnedMesh) {
+          obj.castShadow = true;
+          obj.frustumCulled = false; // skinned bounds go stale as the pose changes
+        }
+      });
+
+      const mixer = new THREE.AnimationMixer(model);
+      const actions = {};
+      gltf.animations.forEach((clip) => { actions[clip.name] = mixer.clipAction(clip); });
+      actions.flap.play();
+
+      const bird = {
+        model, mixer, actions, footOffset,
+        current: actions.flap,
+        mode: 'cruise',
+        modeT: 0,
+        modeDur: 0,
+        perch: null,
+        path: null,          // quadratic bezier [p0, p1, p2] while flying to/from a perch
+        landTimer: rnd(6, 20),
+        angle: (i / BIRD_COUNT) * Math.PI * 2 + rnd(-0.3, 0.3),
+        radius: rnd(6, 13),
+        height: rnd(6.5, 11),
+        bobAmp: rnd(0.5, 1.3),
+        bobRate: rnd(1.4, 2.4),
+        speed: rnd(0.16, 0.30) * (Math.random() < 0.5 ? 1 : -1), // some fly the other way
+        prevY: 0,
+        pos: new THREE.Vector3(),
+      };
+      // Vary the wingbeat a little so the flock doesn't pulse in unison
+      bird.actions.flap.timeScale = rnd(0.85, 1.25);
+      scene.add(model);
+      birds.push(bird);
+    }
+  },
+  undefined,
+  (error) => {
+    console.error('Failed to load bird GLB:', error);
+  }
+);
+
+// Quadratic bezier — the control point is what makes a landing swoop rather than
+// a straight line, and lets a takeoff climb out before rejoining the circle.
+function bezier(p0, p1, p2, t) {
+  const u = 1 - t;
+  return new THREE.Vector3(
+    u*u*p0.x + 2*u*t*p1.x + t*t*p2.x,
+    u*u*p0.y + 2*u*t*p1.y + t*t*p2.y,
+    u*u*p0.z + 2*u*t*p1.z + t*t*p2.z
+  );
+}
+
+function cruisePoint(bird, angle) {
+  return new THREE.Vector3(
+    Math.cos(angle) * bird.radius,
+    bird.height + Math.sin(angle * bird.bobRate) * bird.bobAmp,
+    Math.sin(angle) * bird.radius
+  );
+}
+
+function beginLanding(bird) {
+  const free = perchPoints.filter(p => !p.taken);
+  if (!free.length) { bird.landTimer = rnd(4, 8); return; }
+  // Prefer a perch that is not right across the island, so the descent reads
+  // as choosing somewhere rather than teleporting past everything.
+  free.sort((a, b) =>
+    bird.pos.distanceToSquared(new THREE.Vector3(a.x, a.y, a.z)) -
+    bird.pos.distanceToSquared(new THREE.Vector3(b.x, b.y, b.z)));
+  const perch = free[Math.floor(Math.random() * Math.min(4, free.length))];
+  perch.taken = true;
+  bird.perch = perch;
+
+  const p0 = bird.pos.clone();
+  const p2 = new THREE.Vector3(perch.x, perch.y + bird.footOffset, perch.z);
+  // Hold altitude for the first part of the approach, then drop onto the perch
+  const p1 = new THREE.Vector3(
+    THREE.MathUtils.lerp(p0.x, p2.x, 0.65),
+    THREE.MathUtils.lerp(p0.y, p2.y, 0.15),
+    THREE.MathUtils.lerp(p0.z, p2.z, 0.65)
+  );
+  bird.path = [p0, p1, p2];
+  bird.mode = 'descend';
+  bird.modeT = 0;
+  bird.modeDur = THREE.MathUtils.clamp(p0.distanceTo(p2) / 4.5, 1.6, 4.5);
+  playBirdClip(bird, 'glide');
+}
+
+function beginTakeoff(bird) {
+  const p0 = bird.model.position.clone();
+  const p2 = cruisePoint(bird, bird.angle);
+  // Climb steeply out of the perch before levelling into the circle
+  const p1 = new THREE.Vector3(
+    THREE.MathUtils.lerp(p0.x, p2.x, 0.3),
+    Math.max(p0.y, p2.y) + 1.2,
+    THREE.MathUtils.lerp(p0.z, p2.z, 0.3)
+  );
+  bird.path = [p0, p1, p2];
+  bird.mode = 'takeoff';
+  bird.modeT = 0;
+  bird.modeDur = THREE.MathUtils.clamp(p0.distanceTo(p2) / 5.5, 1.4, 3.5);
+  if (bird.perch) { bird.perch.taken = false; bird.perch = null; }
+  playBirdClip(bird, 'flap');
+}
+
+function playBirdClip(bird, name) {
+  const next = bird.actions[name];
+  if (!next || next === bird.current) return;
+  next.reset().play();
+  bird.current.crossFadeTo(next, 0.4, false);
+  bird.current = next;
+}
+
+function playChickenClip(name) {
+  const next = chickenState.actions[name];
+  if (!next || next === chickenState.current) return;
+  next.reset().play();
+  if (chickenState.current) chickenState.current.crossFadeTo(next, 0.25, false);
+  chickenState.current = next;
+}
+
+// Cross-fade between clips so switches don't snap the pose
+function playManGesture(name) {
+  const next = manState.actions[name];
+  if (!next || next === manState.current) return;
+  next.reset().play();
+  if (manState.current) manState.current.crossFadeTo(next, 0.35, false);
+  manState.current = next;
+  manState.gesture = name;
+}
+
+
+const penguinState = {
+  x: 0, z: 0,           // position on island
+  dir: rnd(0, Math.PI*2), // facing direction
+  speed: 0.022,
+  gesture: 'walk', gestureTick: 0, nextGesture: rnd(3,6),
+  jumpY: 0, jumpVel: 0,
+  turnTimer: rnd(1.5, 3.5), // time until next random turn
+  turnDir: 0,
+};
+const GESTURES = ['wave','jump','spin','wiggle','tilt','wave','sprint'];
+
+// ── Focus mode (click penguin/chicken/duck to zoom in & follow) ─────────────
+const focusRing = new THREE.Mesh(
+  new THREE.RingGeometry(0.34, 0.48, 28),
+  new THREE.MeshBasicMaterial({color:0xfff59a, transparent:true, opacity:0.85, side:THREE.DoubleSide})
+);
+focusRing.rotation.x = -Math.PI/2;
+focusRing.visible = false;
+scene.add(focusRing);
+
+let focused = null; // 'penguin' | 'chicken' | 'duck' | 'man' | null
+function currentFocusObject() {
+  if (focused === 'penguin') return penguin;
+  if (focused === 'chicken') return chickenState.model;
+  if (focused === 'duck') return duckState.model;
+  if (focused === 'man') return manState.model;
+  return null;
+}
+
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+let pointerDownPos = null;
+
+function pickAt(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x = ((clientX-rect.left)/rect.width)*2-1;
+  pointerNDC.y = -((clientY-rect.top)/rect.height)*2+1;
+  raycaster.setFromCamera(pointerNDC, camera);
+  const candidates = [penguin];
+  if (chickenState.model) candidates.push(chickenState.model);
+  if (duckState.model) candidates.push(duckState.model);
+  if (manState.model) candidates.push(manState.model);
+  const hits = raycaster.intersectObjects(candidates, true);
+  if (!hits.length) return null;
+  let root = hits[0].object;
+  while (root.parent && root.parent !== scene) root = root.parent;
+  if (root === penguin) return 'penguin';
+  if (chickenState.model && root === chickenState.model) return 'chicken';
+  if (duckState.model && root === duckState.model) return 'duck';
+  if (manState.model && root === manState.model) return 'man';
+  return null;
+}
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  pointerDownPos = {x:e.clientX, y:e.clientY};
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!pointerDownPos) return;
+  const moved = Math.hypot(e.clientX-pointerDownPos.x, e.clientY-pointerDownPos.y);
+  pointerDownPos = null;
+  if (moved > 6) return; // was a drag, not a click
+  const hit = pickAt(e.clientX, e.clientY);
+  const next = (hit && hit !== focused) ? hit : null;
+  if (next !== focused) userAdjusted = false; // a fresh focus change may re-frame
+  focused = next;
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  renderer.domElement.style.cursor = pickAt(e.clientX, e.clientY) ? 'pointer' : 'grab';
+});
+
+// ── Resize ─────────────────────────────────────────────────────────────────
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+// ── Animate ────────────────────────────────────────────────────────────────
+const clock=new THREE.Clock();
+const __chimneyPos = new THREE.Vector3();
+// Once the user zooms or pans themselves, stop snapping the camera back to its
+// scripted distance — otherwise every scroll gets undone on the next frame.
+// Reset when focus changes, so clicking a character still pulls the camera in.
+let userAdjusted = false;
+renderer.domElement.addEventListener('wheel', () => { userAdjusted = true; }, {passive:true});
+renderer.domElement.addEventListener('touchmove', (e) => {
+  if (e.touches.length >= 2) userAdjusted = true;   // pinch-zoom / two-finger pan
+}, {passive:true});
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button === 1 || e.button === 2) userAdjusted = true;  // middle/right-drag pan
+});
+
+const ORIGIN = new THREE.Vector3(0,0,0);
+const FOCUS_LOOK_OFFSET = new THREE.Vector3(0,0.5,0);
+const FOCUS_RADIUS = 4.5;
+const DEFAULT_RADIUS = 30;
+function animate(){
+  requestAnimationFrame(animate);
+  const t=clock.getElapsedTime();
+  const dt=clock.getDelta ? 0.016 : 0.016;
+
+  floatingHearts.forEach(({mesh,speed,phase,rotSpd,baseY})=>{
+    mesh.position.y=baseY+Math.sin(t*speed+phase)*0.32;
+    mesh.rotation.y+=rotSpd*0.012;
+  });
+  textSprite.position.y=5.2+Math.sin(t*0.9)*0.18;
+
+  // ── Chimney smoke ────────────────────────────────────────────────────────
+  const chimneyWorld = house._chimney.getWorldPosition(__chimneyPos);
+  smokePuffs.forEach(p=>{
+    p.t += 0.0045;
+    if(p.t > 1) p.t = 0;
+    const rise = p.t*1.3;
+    p.mesh.position.set(
+      chimneyWorld.x + Math.sin(t*0.5+p.seed)*0.04*p.t,
+      chimneyWorld.y + 0.32 + rise,
+      chimneyWorld.z + Math.cos(t*0.5+p.seed)*0.04*p.t
+    );
+    p.mesh.scale.setScalar(1 + p.t*1.8);
+    p.mesh.material.opacity = 0.5*(1-p.t);
+  });
+
+  // ── Chicken wander / fly ────────────────────────────────────────────────
+  if (chickenState.model) {
+    chickenState.mixer.update(0.016);
+    chickenState.turnTimer -= 0.016;
+    if (chickenState.turnTimer <= 0) {
+      chickenState.dir += rnd(-1.0, 1.0);
+      chickenState.turnTimer = rnd(1.0, 2.8);
+    }
+
+    // Trigger a fly-by every so often while walking
+    if (chickenState.gesture === 'walk') {
+      chickenState.nextFly -= 0.016;
+      if (chickenState.nextFly <= 0) {
+        chickenState.gesture = 'fly';
+        chickenState.flyElapsed = 0;
+      }
+    }
+
+    const flying = chickenState.gesture === 'fly';
+    playChickenClip(flying ? 'fly' : 'walk');
+    let flyProgress = 0;
+    if (flying) {
+      chickenState.flyElapsed += 0.016;
+      flyProgress = Math.min(chickenState.flyElapsed / FLY_DURATION, 1);
+      chickenState.flyY = Math.sin(Math.PI * flyProgress) * FLY_HEIGHT;
+      if (chickenState.flyElapsed >= FLY_DURATION) {
+        chickenState.gesture = 'walk';
+        chickenState.flyY = 0;
+        chickenState.nextFly = rnd(8, 15);
+      }
+    }
+
+    const speed = flying ? chickenState.speed * FLY_SPEED_MULT : chickenState.speed;
+    const CHICKEN_R = 0.22;
+    // Airborne chickens swoop clear over trees/rocks/pond — no avoidance while flying
+    chickenState.dir = stepAvoiding(
+      chickenState, chickenState.dir, speed, CHICKEN_R,
+      flying ? [] : groundObstacles, ISLAND_RADIUS * 0.90
+    ).dir;
+
+    // Ease toward the surface height so stepping up a block tier reads as a hop
+    // rather than a teleport, and so landing puts the chicken on top of a hill.
+    const surfaceY = groundHeightAt(chickenState.x, chickenState.z);
+    chickenState.groundY += (surfaceY - chickenState.groundY) * (flying ? 0.10 : 0.20);
+
+    chickenState.model.position.set(
+      chickenState.x,
+      chickenState.groundY + chickenState.footOffset + chickenState.flyY + Math.sin(t * 10) * 0.03,
+      chickenState.z
+    );
+    chickenState.model.rotation.y = chickenState.dir + Math.PI / 2;
+    chickenState.model.rotation.x = flying ? -Math.cos(Math.PI * flyProgress) * 0.3 : 0;
+    chickenState.model.rotation.z = flying ? Math.sin(t * 22) * 0.12 : 0;
+  }
+
+  // ── Duck paddle + dabble ────────────────────────────────────────────────
+  if (duckState.model) {
+    const ds = duckState;
+
+    if (ds.gesture === 'swim') {
+      ds.nextDabble -= 0.016;
+      if (ds.nextDabble <= 0) {
+        // Tip forward, head under, tail up — and scatter the fish nearby
+        ds.gesture = 'dabble';
+        ds.dabbleT = 0;
+        spawnRipple(ds.x, ds.z, 0.10, 0.62, 1.5, 0.75);
+        startleFish(ds.x, ds.z, 1.1);
+      }
+
+      ds.turnTimer -= 0.016;
+      if (ds.turnTimer <= 0) {
+        ds.dir += rnd(-0.9, 0.9);
+        ds.turnTimer = rnd(1.0, 2.6);
+      }
+
+      const nx = ds.x + Math.sin(ds.dir) * ds.speed;
+      const nz = ds.z + Math.cos(ds.dir) * ds.speed;
+      if (Math.hypot(nx - pond.x, nz - pond.z) < SWIM_RADIUS) {
+        ds.x = nx;
+        ds.z = nz;
+      } else {
+        // Nose back toward the middle of the pond instead of beaching itself
+        ds.dir = Math.atan2(pond.x - ds.x, pond.z - ds.z) + rnd(-0.4, 0.4);
+      }
+
+      // Trail a wake while paddling, dropped slightly astern of the duck
+      ds.wakeTimer -= 0.016;
+      if (ds.wakeTimer <= 0) {
+        ds.wakeTimer = 0.42;
+        spawnRipple(
+          ds.x - Math.sin(ds.dir) * 0.16,
+          ds.z - Math.cos(ds.dir) * 0.16,
+          0.06, 0.42, 1.9, 0.46
+        );
+      }
+    } else {
+      // Dabbling: hold position, ease down and back up over DABBLE_TIME
+      ds.dabbleT += 0.016;
+      if (ds.dabbleT >= DABBLE_TIME) {
+        ds.gesture = 'swim';
+        ds.nextDabble = rnd(7, 16);
+        spawnRipple(ds.x, ds.z, 0.08, 0.5, 1.4, 0.6);
+      }
+    }
+
+    // Ease the pitch toward its target so the tip-in and recovery are smooth
+    const wantPitch = ds.gesture === 'dabble'
+      ? DABBLE_PITCH * Math.sin(Math.PI * Math.min(ds.dabbleT / DABBLE_TIME, 1))
+      : 0;
+    ds.pitch += (wantPitch - ds.pitch) * 0.12;
+
+    ds.model.position.set(
+      ds.x,
+      // Sink a little while tipped forward, so the head really goes under
+      ds.yBase + Math.sin(t * 2.2) * 0.02 - ds.pitch * 0.06,
+      ds.z
+    );
+    ds.model.rotation.y = ds.dir;          // facing offset is baked into `face`
+    ds.tilt.rotation.x = ds.pitch;         // nose-down pitch
+    ds.tilt.rotation.z = Math.sin(t * 1.7) * 0.05 * (1 - ds.pitch); // roll, settles when tipped
+  }
+
+  // ── Ripples ─────────────────────────────────────────────────────────────
+  for (const r of ripples) {
+    if (r.life <= 0) continue;
+    r.life -= 0.016;
+    const k = 1 - Math.max(r.life, 0) / r.dur;
+    r.mesh.scale.setScalar(THREE.MathUtils.lerp(r.from, r.to, k));
+    r.mesh.material.opacity = r.strength * (1 - k) * (1 - k); // fade out faster than it grows
+    if (r.life <= 0) r.mesh.visible = false;
+  }
+
+  // ── Fish ────────────────────────────────────────────────────────────────
+  for (const f of fishes) {
+    if (f.dart > 0) f.dart = Math.max(0, f.dart - 0.016 * 1.4);
+    const spd = f.speed * (1 + f.dart * 3.5);
+    f.ang += spd * 0.016;
+
+    const x = pond.x + Math.cos(f.ang) * f.rad;
+    const z = pond.z + Math.sin(f.ang) * f.rad;
+    const y = WATER_Y - f.depth + Math.sin(t * 1.3 + f.phase) * 0.025;
+    f.model.position.set(x, y, z);
+
+    // Face along the circle's tangent, with a tail-wag wobble that quickens
+    // while darting
+    const vx = -Math.sin(f.ang) * spd, vz = Math.cos(f.ang) * spd;
+    f.model.rotation.y = Math.atan2(vx, vz)
+      + Math.sin(t * (7 + f.dart * 10) + f.phase) * 0.16;
+    // Drift slowly back to a resting depth and radius after a scare
+    f.depth += (0.22 - f.depth) * 0.004;
+  }
+
+  // ── Birds: circle, land on a tree or the roof, sit a while, take off ─────
+  const BDT = 0.016;
+  for (const bird of birds) {
+    bird.mixer.update(BDT);
+    const prev = bird.model.position.clone();
+
+    if (bird.mode === 'cruise') {
+      bird.angle += bird.speed * BDT;
+      bird.pos.copy(cruisePoint(bird, bird.angle));
+      bird.model.position.copy(bird.pos);
+      // Flap to climb, glide to descend — reads as riding the air
+      playBirdClip(bird, bird.pos.y > bird.prevY ? 'flap' : 'glide');
+      bird.prevY = bird.pos.y;
+
+      bird.landTimer -= BDT;
+      if (bird.landTimer <= 0) beginLanding(bird);
+
+    } else if (bird.mode === 'descend') {
+      bird.modeT = Math.min(bird.modeT + BDT / bird.modeDur, 1);
+      // Ease out so it slows into the perch instead of arriving at full speed
+      const t = 1 - Math.pow(1 - bird.modeT, 2);
+      bird.pos.copy(bezier(bird.path[0], bird.path[1], bird.path[2], t));
+      bird.model.position.copy(bird.pos);
+      // Flare: pitch up and spread the wings over the last stretch of the approach
+      if (bird.modeT > 0.78) playBirdClip(bird, 'flap');
+      if (bird.modeT >= 1) {
+        bird.mode = 'perched';
+        bird.modeT = 0;
+        bird.modeDur = rnd(5, 13);
+        playBirdClip(bird, 'perch');
+      }
+
+    } else if (bird.mode === 'perched') {
+      bird.model.position.copy(bird.path[2]);
+      // Settle upright: no bank, no pitch
+      bird.model.rotation.z += (0 - bird.model.rotation.z) * 0.12;
+      bird.model.rotation.x += (0 - bird.model.rotation.x) * 0.12;
+      bird.modeT += BDT;
+      if (bird.modeT >= bird.modeDur) beginTakeoff(bird);
+
+    } else if (bird.mode === 'takeoff') {
+      bird.modeT = Math.min(bird.modeT + BDT / bird.modeDur, 1);
+      // Ease in: heave off the perch, then accelerate away
+      const t = bird.modeT * bird.modeT;
+      bird.pos.copy(bezier(bird.path[0], bird.path[1], bird.path[2], t));
+      bird.model.position.copy(bird.pos);
+      if (bird.modeT >= 1) {
+        bird.mode = 'cruise';
+        bird.prevY = bird.pos.y;
+        bird.landTimer = rnd(12, 30);
+        bird.path = null;
+      }
+    }
+
+    // Face the way it is actually travelling, banking into turns. Skip while
+    // perched, which manages its own settling rotation above.
+    if (bird.mode !== 'perched') {
+      const vel = bird.model.position.clone().sub(prev);
+      if (vel.lengthSq() > 1e-9) {
+        bird.model.rotation.y = Math.atan2(vel.x, vel.z);
+        bird.model.rotation.x = THREE.MathUtils.clamp(-vel.y * 6, -0.45, 0.45);
+        const bank = bird.mode === 'cruise' ? (bird.speed > 0 ? -0.32 : 0.32) : 0;
+        bird.model.rotation.z += (bank - bird.model.rotation.z) * 0.06;
+      }
+    }
+  }
+
+  // ── Man wander / gesture ────────────────────────────────────────────────
+  if (manState.model) {
+    const ms = manState;
+    ms.mixer.update(0.016);
+
+    ms.gestureTick -= 0.016;
+    if (ms.gestureTick <= 0) {
+      // Mostly walking, with occasional idling, dancing and moonwalking
+      const pick = Math.random();
+      playManGesture(
+        pick < 0.50 ? 'walk' :
+        pick < 0.70 ? 'idle' :
+        pick < 0.85 ? 'moonwalk' : 'dance'
+      );
+      ms.gestureTick = MAN_GAITS[ms.gesture] ? rnd(6, 12) : rnd(4, 9);
+    }
+
+    const gait = MAN_GAITS[ms.gesture];
+    if (gait) {
+      ms.turnTimer -= 0.016;
+      if (ms.turnTimer <= 0) {
+        ms.dir += rnd(-0.8, 0.8);
+        ms.turnTimer = rnd(1.5, 3.5);
+      }
+
+      const MAN_R = 0.35;
+      const speed = MAN_HEIGHT * gait.stride * 0.016;
+      // Moonwalking travels opposite to the way he faces, so steer along the
+      // travel direction and convert back when setting his facing.
+      const travelDir = gait.sign < 0 ? ms.dir + Math.PI : ms.dir;
+      const step = stepAvoiding(ms, travelDir, speed, MAN_R, obstacles, ISLAND_RADIUS * 0.90);
+      ms.dir = gait.sign < 0 ? step.dir - Math.PI : step.dir;
+    }
+
+    const manSurface = groundHeightAt(ms.x, ms.z);
+    ms.groundY += (manSurface - ms.groundY) * 0.20;
+    ms.model.position.set(ms.x, ms.groundY + ms.footOffset, ms.z);
+    ms.model.rotation.y = ms.dir;
+  }
+
+  // ── Penguin logic ───────────────────────────────────────────────────────
+  const ps = penguinState;
+  const DT = 0.016;
+  ps.gestureTick  -= DT;
+  ps.nextGesture  -= DT;
+  ps.turnTimer    -= DT;
+
+  // Pick new random gesture
+  if(ps.nextGesture <= 0 && ps.gestureTick <= 0) {
+    ps.gesture = GESTURES[Math.floor(Math.random()*GESTURES.length)];
+    ps.gestureTick = ps.gesture==='sprint' ? rnd(2.5, 4.0) : rnd(1.5, 3.0);
+    ps.nextGesture = rnd(4.0, 8.0);
+    if(ps.gesture==='jump') ps.jumpVel = 0.055;
+  }
+  if(ps.gestureTick <= 0) ps.gesture = 'walk';
+
+  // Random turning
+  if(ps.turnTimer <= 0) {
+    ps.dir += rnd(-1.1, 1.1);
+    ps.turnTimer = rnd(1.5, 4.0);
+  }
+
+  // Walk forward in facing direction (except paused gestures)
+  const isMoving = ps.gesture==='walk' || ps.gesture==='wiggle' || ps.gesture==='spin' || ps.gesture==='sprint';
+  if(isMoving) {
+    const spd = ps.gesture==='spin' ? ps.speed*0.4 : ps.gesture==='sprint' ? ps.speed*2.8 : ps.speed;
+    const PENGUIN_R = 0.32;
+    const step = stepAvoiding(ps, ps.dir, spd, PENGUIN_R, obstacles, ISLAND_RADIUS*0.92);
+    ps.dir = step.dir;
+    if(step.hit && ps.gesture === 'walk') {
+      // Bounce off an obstacle with a little bump reaction
+      ps.gesture = 'bump';
+      ps.gestureTick = 0.5;
+    }
+  }
+
+  penguin.position.x = ps.x;
+  penguin.position.z = ps.z;
+  penguin.position.y = 0.97 + ps.jumpY;
+
+  // Face walk direction
+  penguin.rotation.y = ps.dir;
+
+  // Waddle sway
+  const sprinting = ps.gesture==='sprint';
+  const waddleFreq = sprinting ? 17 : 8;
+  penguin.rotation.z = isMoving ? Math.sin(t * waddleFreq) * (sprinting ? 0.05 : 0.08) : 0;
+  penguin.rotation.x = sprinting ? 0.2 : 0;
+
+  // Feet bob
+  const footSwing = isMoving ? Math.sin(t * waddleFreq) * (sprinting ? 0.55 : 0.3) : 0;
+  penguin._footL.rotation.x =  footSwing;
+  penguin._footR.rotation.x = -footSwing;
+
+  // Default wings
+  penguin._wingL.rotation.z =  0.15;
+  penguin._wingR.rotation.z = -0.15;
+  penguin._head.rotation.z  =  0;
+  penguin._head.rotation.x  =  0;
+  penguin._head.rotation.y  =  0;
+
+  // ── Gesture animations ──
+  if(ps.gesture==='wave') {
+    penguin._wingR.rotation.z = -0.5 + Math.sin(t*8)*0.5;
+  }
+  else if(ps.gesture==='jump') {
+    ps.jumpVel -= 0.004;
+    ps.jumpY   += ps.jumpVel;
+    if(ps.jumpY <= 0) { ps.jumpY=0; ps.jumpVel=0; ps.gesture='walk'; }
+    penguin._wingL.rotation.z =  0.7;
+    penguin._wingR.rotation.z = -0.7;
+  }
+  else if(ps.gesture==='spin') {
+    ps.dir += 0.06;
+    penguin._wingL.rotation.z =  0.5;
+    penguin._wingR.rotation.z = -0.5;
+  }
+  else if(ps.gesture==='wiggle') {
+    penguin._head.rotation.z  = Math.sin(t*10)*0.18;
+    penguin._wingL.rotation.z =  Math.sin(t*5)*0.4;
+    penguin._wingR.rotation.z = -Math.sin(t*5)*0.4;
+  }
+  else if(ps.gesture==='tilt') {
+    penguin._head.rotation.y = Math.sin(t*1.5)*0.5;
+    penguin._head.rotation.x = Math.sin(t*0.8)*0.15;
+  }
+  else if(ps.gesture==='bump') {
+    // Dazed head shake + both wings flail
+    penguin._head.rotation.z = Math.sin(t*14)*0.25;
+    penguin._wingL.rotation.z =  0.6 + Math.sin(t*10)*0.2;
+    penguin._wingR.rotation.z = -0.6 - Math.sin(t*10)*0.2;
+  }
+  else if(ps.gesture==='sprint') {
+    // Wings tucked back aerodynamically, flapping briskly for momentum
+    penguin._wingL.rotation.z = -0.9 + Math.sin(t*waddleFreq)*0.15;
+    penguin._wingR.rotation.z =  0.9 - Math.sin(t*waddleFreq)*0.15;
+    penguin._head.rotation.x = 0.08;
+  }
+
+  // ── Focus mode camera follow ────────────────────────────────────────────
+  const focusObj = currentFocusObject();
+  if (focusObj) {
+    focusRing.visible = true;
+    focusRing.position.set(focusObj.position.x, 0.99, focusObj.position.z);
+    focusRing.rotation.z += 0.015;
+    focusRing.scale.setScalar(1 + Math.sin(t*4)*0.08);
+  } else {
+    focusRing.visible = false;
+  }
+
+  const wantTarget = focusObj ? focusObj.position.clone().add(FOCUS_LOOK_OFFSET) : ORIGIN;
+  const wantRadius = focusObj ? FOCUS_RADIUS : DEFAULT_RADIUS;
+  const targetGap = controls.target.distanceTo(wantTarget);
+  const curRadius = camera.position.distanceTo(controls.target);
+  const radiusGap = Math.abs(curRadius - wantRadius);
+
+  // Keep re-centring on whatever is focused (OrbitControls carries the camera
+  // along, preserving distance), but only drive the distance itself while the
+  // user has not taken over the zoom.
+  if (focusObj || targetGap > 0.05) {
+    controls.target.lerp(wantTarget, focusObj ? 0.08 : 0.04);
+  }
+  if (!userAdjusted && (focusObj || radiusGap > 0.3)) {
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    const newRadius = THREE.MathUtils.lerp(curRadius, wantRadius, focusObj ? 0.05 : 0.03);
+    camera.position.copy(controls.target).add(dir.multiplyScalar(newRadius));
+  }
+
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+</script>
+</body>
+</html>

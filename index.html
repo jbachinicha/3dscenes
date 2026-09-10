@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Three.js Scenes</title>
+  <meta name="description" content="A gallery of interactive three.js scenes." />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0a0a0d;
+      --bg-2: #101014;
+      --surface: #16161b;
+      --surface-hover: #1c1c22;
+      --ink: #f2f2f5;
+      --ink-soft: #9a9aa5;
+      --ink-faint: #55555f;
+      --accent: #7c5cff;
+      --accent-2: #00e5c7;
+      --line: rgba(255, 255, 255, 0.08);
+      --line-hover: rgba(124, 92, 255, 0.5);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-lift: 0 24px 48px -12px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(124, 92, 255, 0.25);
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(900px 500px at 15% -10%, rgba(124, 92, 255, 0.16) 0%, transparent 60%),
+        radial-gradient(800px 480px at 100% 0%, rgba(0, 229, 199, 0.10) 0%, transparent 55%),
+        linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 72px 24px 96px; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header { text-align: center; margin-bottom: 56px; }
+    h1 {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      font-size: clamp(2.1rem, 5vw, 3.2rem);
+      font-weight: 650;
+      letter-spacing: -0.03em;
+      line-height: 1.08;
+    }
+    h1 .spark {
+      background: linear-gradient(120deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .tagline {
+      margin: 18px auto 0;
+      max-width: 46ch;
+      font-size: 1.02rem;
+      line-height: 1.65;
+      color: var(--ink-soft);
+    }
+
+    /* ── Card grid ──────────────────────────────────────────────────────── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 22px;
+    }
+
+    .card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease, background 0.22s ease;
+    }
+    a.card:hover, a.card:focus-visible {
+      transform: translateY(-4px);
+      box-shadow: var(--shadow-lift);
+      border-color: var(--line-hover);
+      background: var(--surface-hover);
+    }
+    a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+    .thumb {
+      position: relative;
+      aspect-ratio: 8 / 5;
+      background: linear-gradient(160deg, #1a1a22, #101014);
+      overflow: hidden;
+    }
+    .thumb::after {
+      /* Subtle vignette so bright preview images blend into the dark card body */
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(180deg, transparent 60%, rgba(16, 16, 20, 0.35) 100%);
+      pointer-events: none;
+    }
+    .thumb img {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+      filter: saturate(0.92) brightness(0.94);
+      transition: transform 0.5s ease, filter 0.3s ease;
+    }
+    a.card:hover .thumb img { transform: scale(1.045); filter: saturate(1) brightness(1); }
+
+    .body { padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+    .card h2 {
+      font-size: 1.22rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .card p { font-size: 0.92rem; line-height: 1.6; color: var(--ink-soft); }
+
+    .tags { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; padding-top: 6px; }
+    .tag {
+      font-size: 0.72rem;
+      letter-spacing: 0.02em;
+      color: var(--accent-2);
+      background: rgba(0, 229, 199, 0.08);
+      border: 1px solid rgba(0, 229, 199, 0.20);
+      border-radius: 6px;
+      padding: 3px 9px;
+    }
+
+    .go {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 0.86rem; font-weight: 500; color: var(--accent);
+      margin-top: 4px;
+    }
+    .go span { transition: transform 0.22s ease; }
+    a.card:hover .go span { transform: translateX(4px); }
+
+    /* ── Placeholder cards ──────────────────────────────────────────────── */
+    .card.soon {
+      border-style: dashed;
+      border-color: var(--line);
+      background: transparent;
+      box-shadow: none;
+    }
+    .card.soon .thumb {
+      display: grid; place-items: center;
+      background: repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0 12px, rgba(255,255,255,0.045) 12px 24px);
+      color: var(--ink-faint);
+      font-size: 2rem;
+    }
+    .card.soon h2, .card.soon p { color: var(--ink-faint); }
+    .badge {
+      /* Above .thumb, which is positioned and comes later in the DOM */
+      position: absolute; top: 14px; right: 14px; z-index: 2;
+      font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase;
+      color: var(--ink); background: rgba(124, 92, 255, 0.9);
+      border-radius: 6px; padding: 4px 10px;
+    }
+
+    footer {
+      margin-top: 64px; text-align: center;
+      font-size: 0.85rem; color: var(--ink-faint);
+    }
+    footer code {
+      font-size: 0.82rem;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--line);
+      border-radius: 6px; padding: 2px 6px;
+      color: var(--ink-soft);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card, .thumb img, .go span { transition: none; }
+      a.card:hover { transform: none; }
+      a.card:hover .thumb img { transform: none; }
+      a.card:hover .go span { transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Three.js <span class="spark">Scenes</span></h1>
+      <p class="tagline">
+        A growing collection of interactive experiments. Pick one to open it.
+      </p>
+    </header>
+
+    <main class="grid" id="grid"></main>
+
+    <footer>
+      Add a scene by dropping a folder in <code>scenes/</code>, then adding one entry
+      to <code>SCENES</code> below and one line to <code>vite.config.js</code>.
+    </footer>
+  </div>
+
+<script type="module">
+// ── The gallery ─────────────────────────────────────────────────────────────
+// To add a scene: create scenes/<name>/index.html, drop a preview image in
+// public/previews/, add an entry here, and register the page in vite.config.js
+// so it gets built. Use `status: 'soon'` for a placeholder that isn't clickable.
+const SCENES = [
+  {
+    title: 'Pastel Island',
+    href: 'scenes/island/',
+    preview: 'previews/island.jpg',
+    blurb: 'A voxel island where a penguin, a rigged chicken, a rubber duck and a ' +
+           'Mixamo character wander about, while a flock of birds circles overhead ' +
+           'and lands in the trees.',
+    tags: ['glTF', 'Skinned rigs', 'Orbit camera', 'Blender'],
+  },
+  {
+    title: 'Timeline Drive',
+    href: 'scenes/timeline/',
+    preview: 'previews/timeline.jpg',
+    blurb: 'Drive a little car down a winding pastel road lined with photo frames. ' +
+           'Pull up to any frame and its date and caption fade in.',
+    tags: ['Rapier physics', 'Vehicle controller', 'Photo timeline'],
+  },
+  {
+    title: 'Lantern Way',
+    href: 'scenes/lantern-way/',
+    preview: 'previews/lantern-way.jpg',
+    blurb: 'Glide through a dusk sky strung with fairy lights, past photo lanterns ' +
+           'swaying beside the path. Click one to pull it close.',
+    tags: ['No physics', 'Photo gallery', 'Click to zoom'],
+  },
+  {
+    title: 'And another',
+    status: 'soon',
+    icon: '✧',
+    blurb: 'Placeholder card, so the grid keeps its shape while the collection grows.',
+    tags: [],
+  },
+];
+
+const grid = document.getElementById('grid');
+
+const tagsHtml = (tags) =>
+  tags.length ? `<div class="tags">${tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>` : '';
+
+grid.innerHTML = SCENES.map((s) => {
+  const inner = `
+    <div class="thumb">${
+      s.status === 'soon'
+        ? (s.icon ?? '✦')
+        : `<img src="${s.preview}" alt="Preview of ${s.title}" loading="lazy" decoding="async" />`
+    }</div>
+    <div class="body">
+      <h2>${s.title}</h2>
+      <p>${s.blurb}</p>
+      ${tagsHtml(s.tags ?? [])}
+      ${s.status === 'soon' ? '' : '<span class="go">Open scene <span>&rarr;</span></span>'}
+    </div>`;
+
+  // Placeholders are plain divs, so they are not focusable or clickable
+  return s.status === 'soon'
+    ? `<div class="card soon"><span class="badge">Coming soon</span>${inner}</div>`
+    : `<a class="card" href="${s.href}" aria-label="Open ${s.title}">${inner}</a>`;
+}).join('');
+</script>
+</body>
+</html>
