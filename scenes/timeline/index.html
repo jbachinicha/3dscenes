@@ -330,6 +330,24 @@ function updateLoading() {
   }
 }
 
+// Straight off a phone, a photo can be 48 megapixels — which costs ~260 MB of
+// GPU memory once mipmapped. A handful of those and the browser kills the tab,
+// so anything oversized is redrawn at a sane size before it reaches the GPU.
+// The frames are small on screen; 1600px is far more than they can show.
+const MAX_PHOTO_PX = 1600;
+function fitTexture(tex) {
+  const img = tex.image;
+  const longest = Math.max(img.width, img.height);
+  if (longest <= MAX_PHOTO_PX) return tex;
+  const k = MAX_PHOTO_PX / longest;
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.width * k);
+  c.height = Math.round(img.height * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  tex.dispose();
+  return new THREE.CanvasTexture(c);
+}
+
 // Resolve to the photo when it exists, otherwise a placeholder — so the scene
 // looks finished before any images are dropped in.
 function photoMaterial(path, index) {
@@ -338,7 +356,8 @@ function photoMaterial(path, index) {
     photoStarted();
     texLoader.load(
       '../../' + path,
-      (tex) => {
+      (loaded) => {
+        const tex = fitTexture(loaded);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
         mat.map = tex;
