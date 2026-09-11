@@ -87,6 +87,12 @@
       background: var(--surface-hover);
     }
     a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    /* Titles and blurbs stay selectable — only the chrome is not, so tapping a
+       card does not leave the tag chips or the arrow highlighted. */
+    .card .tags, .card .go {
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    }
+    a.card { -webkit-tap-highlight-color: transparent; }
 
     .thumb {
       position: relative;

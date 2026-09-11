@@ -6,7 +6,13 @@
   <title>Lantern Way</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { overflow: hidden; background: #160f2e; font-family: Georgia, serif; }
+    /* Nothing here is meant to be selected — a drag to look around should
+       never start highlighting HUD text or pop the iOS callout menu. */
+    body {
+      overflow: hidden; background: #160f2e; font-family: Georgia, serif;
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    }
     canvas { display: block; }
 
     #back {
@@ -79,7 +85,11 @@
       padding: 0 max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
     }
     #touchControls button {
-      -webkit-tap-highlight-color: transparent; touch-action: none; user-select: none;
+      -webkit-tap-highlight-color: transparent; touch-action: none;
+      /* iOS Safari needs the prefixed forms, or a long press still selects the
+         label text and pops the callout menu mid-glide. */
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none;
       pointer-events: auto;
       color: rgba(255, 226, 190, 0.95);
       background: rgba(40, 24, 58, 0.6); border: 1px solid rgba(255, 179, 122, 0.3);
@@ -754,8 +764,10 @@ const prevGlide = new THREE.Vector3().copy(glideTarget);
 
 function animate() {
   requestAnimationFrame(animate);
-  const t = clock.getElapsedTime();
+  // getDelta() first: getElapsedTime() calls getDelta() internally and resets
+  // the timer, so asking in the other order leaves dt at ~0 and nothing moves.
   const dt = Math.min(clock.getDelta(), 1 / 30);
+  const t = clock.elapsedTime;
 
   const fwd = keys.KeyW || keys.ArrowUp;
   const back = keys.KeyS || keys.ArrowDown;

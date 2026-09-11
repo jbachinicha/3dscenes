@@ -6,7 +6,13 @@
   <title>Island</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { overflow: hidden; background: #fce8f4; }
+    /* Nothing here is meant to be selected — a drag to orbit should never
+       start highlighting HUD text or pop the iOS callout menu. */
+    body {
+      overflow: hidden; background: #fce8f4;
+      user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    }
     canvas { display: block; }
     #back {
       position: fixed;
